@@ -32,9 +32,20 @@ BINARY_SENSORS: tuple[DDWRTBinarySensorDescription, ...] = (
         name="WAN Connected",
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         icon="mdi:wan",
-        # DD-WRT wan_status can be "Connected", "connected", "CONNECTED", or
-        # "Disconnected"/"Connecting"/etc. Some builds use a numeric "1"/"0".
-        value_fn=lambda d: d.wan_status.lower() in ("connected", "1", "true"),
+        # DD-WRT WAN connected logic:
+        #
+        # For *static* WAN (no DHCP handshake needed), the router is connected
+        # as long as it has a WAN IP — the wan_status string may say "Error"
+        # because DD-WRT uses that to signal "no dynamic connection attempt was
+        # made", not that the link is down.
+        #
+        # For all other protocols (dhcp, pppoe, pptp, etc.) we trust wan_status
+        # which is normalised by _strip_html() in the client.
+        value_fn=lambda d: (
+            bool(d.wan_ipaddr)  # static: IP present = link up
+            if d.wan_proto.lower() == "static"
+            else d.wan_status.lower() in ("connected", "1", "true")
+        ),
     ),
     DDWRTBinarySensorDescription(
         key="wl_radio",
