@@ -39,13 +39,11 @@ async def async_setup_entry(
 ) -> None:
     coordinator: DataUpdateCoordinator[DDWRTData] = hass.data[DOMAIN][entry.entry_id]
 
-    track_wifi: bool = entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI)
-    track_dhcp: bool = entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP)
-
     _LOGGER.debug(
         "DD-WRT device_tracker setup: track_wifi=%s track_dhcp=%s "
         "coordinator_has_data=%s wl_clients=%d dhcp_leases=%d",
-        track_wifi, track_dhcp,
+        entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI),
+        entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP),
         coordinator.data is not None,
         len(coordinator.data.wl_clients) if coordinator.data else -1,
         len(coordinator.data.dhcp_leases) if coordinator.data else -1,
@@ -56,7 +54,6 @@ async def async_setup_entry(
 
     @callback
     def _add_new_devices() -> None:
-        # Guard: coordinator might not have data yet on very first call
         if coordinator.data is None:
             _LOGGER.warning("DD-WRT device_tracker: coordinator.data is None — skipping")
             return
@@ -64,25 +61,20 @@ async def async_setup_entry(
         new_entities: list[ScannerEntity] = []
 
         try:
-            # ── WiFi clients ────────────────────────────────────────────────
             if entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI):
                 for client in coordinator.data.wl_clients:
                     mac = client["mac"].upper()
                     if mac not in wifi_tracked:
                         wifi_tracked.add(mac)
-                        new_entities.append(
-                            DDWRTWifiTracker(coordinator, entry, mac)
-                        )
+                        new_entities.append(DDWRTWifiTracker(coordinator, entry, mac))
 
-            # ── DHCP leases ─────────────────────────────────────────────────
             if entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP):
                 for lease in coordinator.data.dhcp_leases:
                     mac = lease["mac"].upper()
                     if mac not in dhcp_tracked:
                         dhcp_tracked.add(mac)
-                        new_entities.append(
-                            DDWRTDhcpTracker(coordinator, entry, mac)
-                        )
+                        new_entities.append(DDWRTDhcpTracker(coordinator, entry, mac))
+
         except Exception:  # noqa: BLE001
             _LOGGER.exception("DD-WRT: unexpected error while building tracker entities")
             return
@@ -106,7 +98,10 @@ async def async_setup_entry(
 class DDWRTWifiTracker(
     CoordinatorEntity[DataUpdateCoordinator[DDWRTData]], ScannerEntity
 ):
-    """Tracks a device currently associated with the DD-WRT WiFi radio."""
+    """Tracks a device currently associated with the DD-WRT WiFi radio.
+
+    Entity name format: "[ddwrt-wifi] AA:BB:CC:DD:EE:FF"
+    """
 
     _attr_source_type = SourceType.ROUTER
 
@@ -118,9 +113,8 @@ class DDWRTWifiTracker(
     ) -> None:
         super().__init__(coordinator)
         self._mac = mac
-        self._entry_id = entry.entry_id
         self._attr_unique_id = f"{entry.entry_id}_wifi_{mac}"
-        self._attr_name = f"WiFi {mac}"
+        self._attr_name = f"[ddwrt-wifi] {mac}"
 
     @property
     def is_connected(self) -> bool:
@@ -138,11 +132,11 @@ class DDWRTWifiTracker(
     @property
     def extra_state_attributes(self) -> dict:
         if self.coordinator.data is None:
-            return {"tracker_type": "wifi"}
+            return {"tracker_type": "ddwrt-wifi"}
         for client in self.coordinator.data.wl_clients:
             if client["mac"].upper() == self._mac:
                 return {
-                    "tracker_type": "wifi",
+                    "tracker_type": "ddwrt-wifi",
                     "interface": client.get("interface"),
                     "signal": client.get("signal"),
                     "noise": client.get("noise"),
@@ -151,7 +145,7 @@ class DDWRTWifiTracker(
                     "rx_rate": client.get("rx_rate"),
                     "uptime": client.get("uptime"),
                 }
-        return {"tracker_type": "wifi"}
+        return {"tracker_type": "ddwrt-wifi"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -164,7 +158,7 @@ class DDWRTDhcpTracker(
     """Tracks a device with an active DHCP lease on DD-WRT.
 
     'Connected' means the lease is still present in the lease table.
-    This covers both wired and wireless clients.
+    Entity name format: "[ddwrt-dhcp] hostname" or "[ddwrt-dhcp] AA:BB:..."
     """
 
     _attr_source_type = SourceType.ROUTER
@@ -178,9 +172,8 @@ class DDWRTDhcpTracker(
         super().__init__(coordinator)
         self._mac = mac
         self._attr_unique_id = f"{entry.entry_id}_dhcp_{mac}"
-        # Use hostname from lease as the initial name; HA users can rename later
         hostname = self._get_lease(coordinator.data, mac).get("hostname") or mac
-        self._attr_name = f"DHCP {hostname}"
+        self._attr_name = f"[ddwrt-dhcp] {hostname}"
 
     @staticmethod
     def _get_lease(data: DDWRTData | None, mac: str) -> dict:
@@ -193,7 +186,6 @@ class DDWRTDhcpTracker(
 
     @property
     def is_connected(self) -> bool:
-        """True while the DHCP lease exists in the router's table."""
         return bool(self._get_lease(self.coordinator.data, self._mac))
 
     @property
@@ -212,7 +204,7 @@ class DDWRTDhcpTracker(
     def extra_state_attributes(self) -> dict:
         lease = self._get_lease(self.coordinator.data, self._mac)
         return {
-            "tracker_type": "dhcp",
+            "tracker_type": "ddwrt-dhcp",
             "ip": lease.get("ip"),
             "hostname": lease.get("hostname"),
             "expires": lease.get("expires"),
