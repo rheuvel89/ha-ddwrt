@@ -161,7 +161,9 @@ class DDWRTClient:
                 router_raw[:500],
             )
         else:
-            _LOGGER.debug("DD-WRT router keys: %s", list(r.keys()))
+            # WARNING so this shows in HA logs without enabling debug level.
+            # Downgrade to debug once sensors are confirmed working.
+            _LOGGER.warning("DD-WRT DIAG router keys+values: %s", dict(r))
 
         if not w:
             _LOGGER.warning(
@@ -170,7 +172,7 @@ class DDWRTClient:
                 wireless_raw[:500],
             )
         else:
-            _LOGGER.debug("DD-WRT wireless keys: %s", list(w.keys()))
+            _LOGGER.warning("DD-WRT DIAG wireless keys+values: %s", dict(w))
 
         # ── Memory ────────────────────────────────────────────────────────────
         # DD-WRT firmware may include a " kB" unit suffix in memory values, e.g.
