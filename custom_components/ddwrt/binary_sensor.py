@@ -32,17 +32,19 @@ BINARY_SENSORS: tuple[DDWRTBinarySensorDescription, ...] = (
         name="WAN Connected",
         device_class=BinarySensorDeviceClass.CONNECTIVITY,
         icon="mdi:wan",
-        value_fn=lambda d: d.wan_status.lower() == "connected",
+        # DD-WRT wan_status can be "Connected", "connected", "CONNECTED", or
+        # "Disconnected"/"Connecting"/etc. Some builds use a numeric "1"/"0".
+        value_fn=lambda d: d.wan_status.lower() in ("connected", "1", "true"),
     ),
     DDWRTBinarySensorDescription(
         key="wl_radio",
         name="WiFi Radio",
         device_class=BinarySensorDeviceClass.POWER,
         icon="mdi:wifi",
-        # DD-WRT firmware returns values like "Radio is On" / "Radio is Off".
-        # A plain `in ("on", …)` check misses those; check for "on" as a
-        # substring instead, which covers both the bare word and the phrase.
-        value_fn=lambda d: "on" in d.wl_radio.lower() or d.wl_radio.strip() in ("1", "true", "enabled"),
+        # _resolve_radio() in ddwrt_client normalises the value to "Enabled" or
+        # "Disabled" (or infers state from SSID/clients when the key is absent),
+        # so a simple equality check is sufficient here.
+        value_fn=lambda d: d.wl_radio.lower() in ("enabled", "on", "1", "true"),
     ),
 )
 
