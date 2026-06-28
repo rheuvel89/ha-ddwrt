@@ -13,7 +13,6 @@ from homeassistant.const import (
     CONF_USERNAME,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DEFAULT_SCAN_INTERVAL, DOMAIN, PLATFORMS
@@ -24,14 +23,12 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up DD-WRT from a config entry."""
-    session = async_get_clientsession(hass)
     client = DDWRTClient(
         host=entry.data[CONF_HOST],
         username=entry.data[CONF_USERNAME],
         password=entry.data[CONF_PASSWORD],
         port=entry.data[CONF_PORT],
         ssl=entry.data[CONF_SSL],
-        session=session,
     )
 
     async def _async_update() -> DDWRTData:
@@ -53,6 +50,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Close the client session when the entry is unloaded
+    entry.async_on_unload(client.close)
+
     return True
 
 
