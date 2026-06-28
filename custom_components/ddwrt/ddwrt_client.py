@@ -13,6 +13,13 @@ _LOGGER = logging.getLogger(__name__)
 
 _KV_RE = re.compile(r"\{(\w+)::([^}]*)\}")
 
+# Matches the Linux uptime load-average trailer:
+#   "... load average: 0.03, 0.04, 0.00"
+_LOAD_RE = re.compile(r"load average:\s*([\d.]+(?:,\s*[\d.]+)*)", re.IGNORECASE)
+
+# Strips a trailing unit suffix like " kB", " MB", " GB" so _safe_int can work.
+_UNIT_RE = re.compile(r"\s*[kmgKMG]?[bB]$")
+
 
 def _parse_live(text: str) -> dict[str, str]:
     return {m.group(1): m.group(2).strip() for m in _KV_RE.finditer(text)}
@@ -165,25 +172,83 @@ class DDWRTClient:
         else:
             _LOGGER.debug("DD-WRT wireless keys: %s", list(w.keys()))
 
+        # ── Memory ────────────────────────────────────────────────────────────
+        # DD-WRT firmware may include a " kB" unit suffix in memory values, e.g.
+        # "14836 kB". _safe_int() strips that suffix before converting to int.
         mem_used = _safe_int(r.get("mem_used", "0"))
         mem_free = _safe_int(r.get("mem_free", "0"))
 
+        # ── Load average ──────────────────────────────────────────────────────
+        # Some DD-WRT builds expose a standalone {load_avg::…} key; others embed
+        # the load average inside the uptime string:
+        #   "12:53:44 up 12:59, load average: 0.03, 0.04, 0.00"
+        # We try the dedicated key first, then fall back to extracting from uptime.
+        uptime_raw = r.get("uptime", "")
+        load_avg_raw = r.get("load_avg", "")
+        if not load_avg_raw:
+            m = _LOAD_RE.search(uptime_raw)
+            if m:
+                load_avg_raw = m.group(1).replace(", ", " ")
+                _LOGGER.debug("DD-WRT: load_avg extracted from uptime string: %r", load_avg_raw)
+
+        # Strip the load-average trailer from the uptime display string so the
+        # Uptime sensor only shows the human-readable uptime portion.
+        uptime_display = _LOAD_RE.sub("", uptime_raw).rstrip(", ").strip()
+
+        # ── LAN IP ────────────────────────────────────────────────────────────
+        # Different firmware versions use different key names for the LAN address.
+        lan_ip = (
+            r.get("lan_ipaddr")
+            or r.get("lan_ip")
+            or r.get("local_ip")
+            or r.get("ip_addr")
+            or ""
+        )
+
+        # ── WAN fields ────────────────────────────────────────────────────────
+        # Try common alternate key names used by different firmware builds.
+        wan_ip = (
+            r.get("wan_ipaddr")
+            or r.get("wan_ip")
+            or r.get("wanip")
+            or ""
+        )
+        wan_status = (
+            r.get("wan_status")
+            or r.get("wan_3g_status")
+            or r.get("wan_connected")
+            or ""
+        )
+        wan_proto = (
+            r.get("wan_proto")
+            or r.get("wan_type")
+            or ""
+        )
+
+        # ── WiFi radio state ──────────────────────────────────────────────────
+        # The `wl_radio` key is absent on many builds.  Infer from clients/SSID
+        # when the key is missing or empty.
+        wl_radio_raw = w.get("wl_radio", "")
+        wl_clients_raw = w.get("active_wireless", "")
+        wl_ssid = w.get("wl_ssid", "")
+        wl_radio = _resolve_radio(wl_radio_raw, wl_ssid, wl_clients_raw)
+
         return DDWRTData(
             router_name=r.get("router_name", "DD-WRT"),
-            wan_ipaddr=r.get("wan_ipaddr", ""),
-            wan_status=r.get("wan_status", ""),
-            wan_proto=r.get("wan_proto", ""),
-            uptime=r.get("uptime", ""),
-            load_avg=r.get("load_avg", ""),
+            wan_ipaddr=wan_ip,
+            wan_status=wan_status,
+            wan_proto=wan_proto,
+            uptime=uptime_display,
+            load_avg=load_avg_raw,
             mem_used=mem_used,
             mem_free=mem_free,
             mem_total=mem_used + mem_free,
-            lan_ipaddr=r.get("lan_ipaddr", ""),
-            wl_ssid=w.get("wl_ssid", ""),
+            lan_ipaddr=lan_ip,
+            wl_ssid=wl_ssid,
             wl_channel=w.get("wl_channel", ""),
-            wl_radio=w.get("wl_radio", ""),
+            wl_radio=wl_radio,
             wl_rate=w.get("wl_rate", ""),
-            wl_clients=_parse_clients(w.get("active_wireless", "")),
+            wl_clients=_parse_clients(wl_clients_raw),
             dhcp_leases=_parse_dhcp(r.get("dhcp_leases", "")),
         )
 
@@ -193,17 +258,57 @@ class AuthError(ConnectionError):
 
 
 def _safe_int(value: str) -> int:
+    """Convert a string to int, stripping commas and trailing unit suffixes (e.g. ' kB')."""
     try:
-        return int(value.replace(",", "").strip())
+        cleaned = _UNIT_RE.sub("", value).replace(",", "").strip()
+        return int(cleaned)
     except (ValueError, AttributeError):
         return 0
 
 
+def _resolve_radio(wl_radio: str, wl_ssid: str, active_wireless: str) -> str:
+    """Return a canonical radio-state string.
+
+    DD-WRT sometimes omits the wl_radio key entirely.  When it is present the
+    value can be: "Enabled", "Disabled", "Radio is On", "Radio is Off", "1",
+    "0", etc.  When it is absent we infer the state from context:
+      - An SSID being broadcast → radio is on
+      - Active wireless clients → radio is on (clients wouldn't be associated otherwise)
+    """
+    if wl_radio:
+        lower = wl_radio.lower()
+        if "on" in lower or lower in ("1", "true", "enabled"):
+            return "Enabled"
+        if "off" in lower or lower in ("0", "false", "disabled"):
+            return "Disabled"
+        # Unknown value — return as-is so the binary sensor can still try.
+        return wl_radio
+
+    # Key absent — infer from context.
+    if wl_ssid.strip() or active_wireless.strip():
+        _LOGGER.debug(
+            "DD-WRT: wl_radio key absent; inferring radio ON from ssid=%r clients=%r",
+            wl_ssid, active_wireless[:80],
+        )
+        return "Enabled"
+
+    return ""
+
+
 def _parse_clients(raw: str) -> list[dict[str, str]]:
+    """Parse the active_wireless CSV blob.
+
+    DD-WRT packs each client as 9 comma-separated fields:
+      MAC, interface, uptime, tx_rate, rx_rate, signal, noise, snr, quality
+
+    Fields are single-quoted, e.g.:
+      'AA:BB:CC:DD:EE:FF','ath0','0 days 00:01:23','130','130','-55','-95','40','100'
+    """
     if not raw:
         return []
     fields = [f.strip().strip("'") for f in raw.split(",")]
     clients: list[dict[str, str]] = []
+    # Step by 9; stop when fewer than 9 fields remain to avoid index errors.
     for i in range(0, len(fields) - 8, 9):
         c = fields[i : i + 9]
         clients.append({
@@ -215,13 +320,33 @@ def _parse_clients(raw: str) -> list[dict[str, str]]:
 
 
 def _parse_dhcp(raw: str) -> list[dict[str, str]]:
+    """Parse the dhcp_leases CSV blob.
+
+    DD-WRT packs each lease as 5 comma-separated fields:
+      hostname, MAC, IP, expires, type
+
+    The legacy code used 4 fields (missing 'type'), which shifted every
+    second lease by one position and produced zero leases after the first.
+    """
     if not raw:
         return []
     fields = [f.strip().strip("'") for f in raw.split(",")]
     leases: list[dict[str, str]] = []
-    for i in range(0, len(fields) - 3, 4):
-        c = fields[i : i + 4]
-        leases.append({
-            "hostname": c[0], "mac": c[1], "ip": c[2], "expires": c[3],
-        })
+
+    # Try 5-field format first (current DD-WRT default).
+    # Fall back to 4-field if the count is not a multiple of 5 but is of 4.
+    stride = 5 if len(fields) % 5 == 0 else 4
+    _LOGGER.debug("DD-WRT DHCP: %d fields → stride=%d", len(fields), stride)
+
+    for i in range(0, len(fields) - (stride - 1), stride):
+        c = fields[i : i + stride]
+        lease: dict[str, str] = {
+            "hostname": c[0],
+            "mac": c[1],
+            "ip": c[2],
+            "expires": c[3],
+        }
+        if stride == 5:
+            lease["type"] = c[4]
+        leases.append(lease)
     return leases
