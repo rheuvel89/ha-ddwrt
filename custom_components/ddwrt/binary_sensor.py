@@ -39,7 +39,10 @@ BINARY_SENSORS: tuple[DDWRTBinarySensorDescription, ...] = (
         name="WiFi Radio",
         device_class=BinarySensorDeviceClass.POWER,
         icon="mdi:wifi",
-        value_fn=lambda d: d.wl_radio.lower() in ("on", "enabled", "1", "true"),
+        # DD-WRT firmware returns values like "Radio is On" / "Radio is Off".
+        # A plain `in ("on", …)` check misses those; check for "on" as a
+        # substring instead, which covers both the bare word and the phrase.
+        value_fn=lambda d: "on" in d.wl_radio.lower() or d.wl_radio.strip() in ("1", "true", "enabled"),
     ),
 )
 

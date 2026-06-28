@@ -35,6 +35,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return await client.async_get_data()
         except ConnectionError as err:
             raise UpdateFailed(f"Error communicating with DD-WRT: {err}") from err
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.exception("DD-WRT: unexpected error during data update: %s", err)
+            raise UpdateFailed(f"Unexpected error from DD-WRT: {err}") from err
 
     coordinator: DataUpdateCoordinator[DDWRTData] = DataUpdateCoordinator(
         hass,

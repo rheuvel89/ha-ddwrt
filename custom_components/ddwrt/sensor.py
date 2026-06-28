@@ -59,7 +59,8 @@ SENSORS: tuple[DDWRTSensorEntityDescription, ...] = (
         key="load_avg",
         name="Load Average",
         icon="mdi:gauge",
-        state_class=SensorStateClass.MEASUREMENT,
+        # load_avg is a free-form string like "0.10 0.05 0.02"; no state_class
+        # because HA rejects non-numeric values for MEASUREMENT sensors.
         value_fn=lambda d: d.load_avg or None,
     ),
     DDWRTSensorEntityDescription(
@@ -68,7 +69,9 @@ SENSORS: tuple[DDWRTSensorEntityDescription, ...] = (
         icon="mdi:memory",
         native_unit_of_measurement=UnitOfInformation.KILOBYTES,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: d.mem_used if d.mem_used else None,
+        # Use `is not None` guard so that a legitimate value of 0 is reported
+        # as 0 rather than as unknown.
+        value_fn=lambda d: d.mem_used if d.mem_used is not None else None,
     ),
     DDWRTSensorEntityDescription(
         key="mem_free",
@@ -76,7 +79,7 @@ SENSORS: tuple[DDWRTSensorEntityDescription, ...] = (
         icon="mdi:memory",
         native_unit_of_measurement=UnitOfInformation.KILOBYTES,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: d.mem_free if d.mem_free else None,
+        value_fn=lambda d: d.mem_free if d.mem_free is not None else None,
     ),
     DDWRTSensorEntityDescription(
         key="mem_usage_pct",
