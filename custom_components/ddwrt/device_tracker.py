@@ -31,15 +31,11 @@ async def async_setup_entry(
 ) -> None:
     coordinator: DataUpdateCoordinator[DDWRTData] = hass.data[DOMAIN][entry.entry_id]
 
-    track_wifi = entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI)
-    track_dhcp = entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP)
-
-    _LOGGER.warning(
-        "DD-WRT device_tracker async_setup_entry called: "
-        "track_wifi=%s track_dhcp=%s entry_id=%s "
-        "coordinator_data=%s wl_clients=%s dhcp_leases=%s",
-        track_wifi, track_dhcp, entry.entry_id,
-        coordinator.data is not None,
+    _LOGGER.debug(
+        "DD-WRT device_tracker setup: track_wifi=%s track_dhcp=%s "
+        "wl_clients=%s dhcp_leases=%s",
+        entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI),
+        entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP),
         len(coordinator.data.wl_clients) if coordinator.data else "NO DATA",
         len(coordinator.data.dhcp_leases) if coordinator.data else "NO DATA",
     )
@@ -74,13 +70,8 @@ async def async_setup_entry(
             _LOGGER.exception("DD-WRT: unexpected error while building tracker entities")
             return
 
-        _LOGGER.warning(
-            "DD-WRT device_tracker _add_new_devices: %d new entities "
-            "(wifi_total=%d dhcp_total=%d) entities=%s",
-            len(new_entities), len(wifi_tracked), len(dhcp_tracked),
-            [(e.unique_id, e.name) for e in new_entities],
-        )
         if new_entities:
+            _LOGGER.debug("DD-WRT device_tracker: adding %d new entities", len(new_entities))
             async_add_entities(new_entities)
 
     _add_new_devices()
@@ -102,12 +93,18 @@ class DDWRTWifiTracker(
     ) -> None:
         super().__init__(coordinator)
         self._mac = mac
-        self._attr_unique_id = f"{entry.entry_id}_wifi_{mac}"
+        self._unique_id = f"{entry.entry_id}_wifi_{mac}"
         self._attr_name = f"[ddwrt-wifi] {mac}"
-        _LOGGER.warning(
-            "DD-WRT DDWRTWifiTracker.__init__: unique_id=%s name=%s",
-            self._attr_unique_id, self._attr_name,
-        )
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID — must override ScannerEntity which returns mac_address."""
+        return self._unique_id
+
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Enable by default — ScannerEntity disables until a device entry exists."""
+        return True
 
     @property
     def is_connected(self) -> bool:
@@ -156,13 +153,19 @@ class DDWRTDhcpTracker(
     ) -> None:
         super().__init__(coordinator)
         self._mac = mac
-        self._attr_unique_id = f"{entry.entry_id}_dhcp_{mac}"
+        self._unique_id = f"{entry.entry_id}_dhcp_{mac}"
         hostname = self._get_lease(coordinator.data, mac).get("hostname") or mac
         self._attr_name = f"[ddwrt-dhcp] {hostname}"
-        _LOGGER.warning(
-            "DD-WRT DDWRTDhcpTracker.__init__: unique_id=%s name=%s",
-            self._attr_unique_id, self._attr_name,
-        )
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID — must override ScannerEntity which returns mac_address."""
+        return self._unique_id
+
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Enable by default — ScannerEntity disables until a device entry exists."""
+        return True
 
     @staticmethod
     def _get_lease(data: DDWRTData | None, mac: str) -> dict:
