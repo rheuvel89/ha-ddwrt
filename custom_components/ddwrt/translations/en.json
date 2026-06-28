@@ -1,0 +1,36 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to your DD-WRT router",
+        "description": "Enter your router's connection details. The default username is **root**.",
+        "data": {
+          "host": "IP Address or Hostname",
+          "port": "Port",
+          "username": "Username",
+          "password": "Password",
+          "ssl": "Use HTTPS"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect — check the IP address, port, and credentials.",
+      "unknown": "An unexpected error occurred. Check the Home Assistant logs."
+    },
+    "abort": {
+      "already_configured": "This router is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "DD-WRT Tracker Options",
+        "description": "Choose which device tracker families to enable. Changes take effect on the next poll.",
+        "data": {
+          "track_wifi_clients": "Track WiFi clients (wireless associations)",
+          "track_dhcp_clients": "Track DHCP clients (wired + wireless leases)"
+        }
+      }
+    }
+  }
+}
