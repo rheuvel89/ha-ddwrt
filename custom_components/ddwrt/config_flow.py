@@ -57,14 +57,19 @@ def _options_schema(current: dict[str, Any]) -> vol.Schema:
 
 async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, str]:
     """Validate credentials and return router info."""
-    session = ha_aiohttp.async_get_clientsession(hass)
+    _LOGGER.debug(
+        "DD-WRT setup: host=%s port=%s username=%s password_length=%d",
+        data.get(CONF_HOST),
+        data.get(CONF_PORT),
+        data.get(CONF_USERNAME),
+        len(data.get(CONF_PASSWORD, "")),
+    )
     client = DDWRTClient(
         host=data[CONF_HOST],
         username=data[CONF_USERNAME],
         password=data[CONF_PASSWORD],
         port=data[CONF_PORT],
         ssl=data[CONF_SSL],
-        session=session,
     )
     try:
         router_data = await client.async_get_data()
@@ -74,6 +79,8 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str
     except ConnectionError as err:
         _LOGGER.error("DD-WRT connection error during setup: %s", err)
         raise CannotConnect from err
+    finally:
+        await client.close()
     return {"title": router_data.router_name or data[CONF_HOST]}
 
 

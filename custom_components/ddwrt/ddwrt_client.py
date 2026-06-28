@@ -74,6 +74,10 @@ class DDWRTClient:
         self._ssl = ssl
         self._base = f"{'https' if ssl else 'http'}://{host}:{port}"
         self._auth_header = _basic_auth_header(username, password)
+        _LOGGER.debug(
+            "DD-WRT client created for %s@%s — password length: %d, auth header length: %d",
+            username, host, len(password), len(self._auth_header),
+        )
 
         # Always create a dedicated session so we never share cookies/state
         # with the HA-wide client session, which can cause 401s on DD-WRT.
