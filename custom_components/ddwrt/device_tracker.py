@@ -1,12 +1,4 @@
-"""Device tracker platform for DD-WRT.
-
-Two separate tracker families:
-  - WiFi trackers  (from /Status_Wireless.live.asp active_wireless)
-  - DHCP trackers  (from /Status_Lan.live.asp dhcp_leases)
-
-Each family can be independently toggled via the integration's Options flow
-(Settings → Devices & Services → DD-WRT → Configure).
-"""
+"""Device tracker platform for DD-WRT."""
 from __future__ import annotations
 
 import logging
@@ -39,14 +31,17 @@ async def async_setup_entry(
 ) -> None:
     coordinator: DataUpdateCoordinator[DDWRTData] = hass.data[DOMAIN][entry.entry_id]
 
-    _LOGGER.debug(
-        "DD-WRT device_tracker setup: track_wifi=%s track_dhcp=%s "
-        "coordinator_has_data=%s wl_clients=%d dhcp_leases=%d",
-        entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI),
-        entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP),
+    track_wifi = entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI)
+    track_dhcp = entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP)
+
+    _LOGGER.warning(
+        "DD-WRT device_tracker async_setup_entry called: "
+        "track_wifi=%s track_dhcp=%s entry_id=%s "
+        "coordinator_data=%s wl_clients=%s dhcp_leases=%s",
+        track_wifi, track_dhcp, entry.entry_id,
         coordinator.data is not None,
-        len(coordinator.data.wl_clients) if coordinator.data else -1,
-        len(coordinator.data.dhcp_leases) if coordinator.data else -1,
+        len(coordinator.data.wl_clients) if coordinator.data else "NO DATA",
+        len(coordinator.data.dhcp_leases) if coordinator.data else "NO DATA",
     )
 
     wifi_tracked: set[str] = set()
@@ -79,10 +74,11 @@ async def async_setup_entry(
             _LOGGER.exception("DD-WRT: unexpected error while building tracker entities")
             return
 
-        _LOGGER.debug(
-            "DD-WRT device_tracker: adding %d new entities "
-            "(wifi_total=%d, dhcp_total=%d)",
+        _LOGGER.warning(
+            "DD-WRT device_tracker _add_new_devices: %d new entities "
+            "(wifi_total=%d dhcp_total=%d) entities=%s",
             len(new_entities), len(wifi_tracked), len(dhcp_tracked),
+            [(e.unique_id, e.name) for e in new_entities],
         )
         if new_entities:
             async_add_entities(new_entities)
@@ -91,17 +87,10 @@ async def async_setup_entry(
     coordinator.async_add_listener(_add_new_devices)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# WiFi tracker
-# ─────────────────────────────────────────────────────────────────────────────
-
 class DDWRTWifiTracker(
     CoordinatorEntity[DataUpdateCoordinator[DDWRTData]], ScannerEntity
 ):
-    """Tracks a device currently associated with the DD-WRT WiFi radio.
-
-    Entity name format: "[ddwrt-wifi] AA:BB:CC:DD:EE:FF"
-    """
+    """Tracks a device currently associated with the DD-WRT WiFi radio."""
 
     _attr_source_type = SourceType.ROUTER
 
@@ -115,6 +104,10 @@ class DDWRTWifiTracker(
         self._mac = mac
         self._attr_unique_id = f"{entry.entry_id}_wifi_{mac}"
         self._attr_name = f"[ddwrt-wifi] {mac}"
+        _LOGGER.warning(
+            "DD-WRT DDWRTWifiTracker.__init__: unique_id=%s name=%s",
+            self._attr_unique_id, self._attr_name,
+        )
 
     @property
     def is_connected(self) -> bool:
@@ -148,18 +141,10 @@ class DDWRTWifiTracker(
         return {"tracker_type": "ddwrt-wifi"}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DHCP tracker
-# ─────────────────────────────────────────────────────────────────────────────
-
 class DDWRTDhcpTracker(
     CoordinatorEntity[DataUpdateCoordinator[DDWRTData]], ScannerEntity
 ):
-    """Tracks a device with an active DHCP lease on DD-WRT.
-
-    'Connected' means the lease is still present in the lease table.
-    Entity name format: "[ddwrt-dhcp] hostname" or "[ddwrt-dhcp] AA:BB:..."
-    """
+    """Tracks a device with an active DHCP lease on DD-WRT."""
 
     _attr_source_type = SourceType.ROUTER
 
@@ -174,6 +159,10 @@ class DDWRTDhcpTracker(
         self._attr_unique_id = f"{entry.entry_id}_dhcp_{mac}"
         hostname = self._get_lease(coordinator.data, mac).get("hostname") or mac
         self._attr_name = f"[ddwrt-dhcp] {hostname}"
+        _LOGGER.warning(
+            "DD-WRT DDWRTDhcpTracker.__init__: unique_id=%s name=%s",
+            self._attr_unique_id, self._attr_name,
+        )
 
     @staticmethod
     def _get_lease(data: DDWRTData | None, mac: str) -> dict:
