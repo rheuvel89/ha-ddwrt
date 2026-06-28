@@ -293,6 +293,16 @@ class DDWRTClient:
             or ""
         )
 
+        # DD-WRT reports "Error" for static WAN because there is no dynamic
+        # connection attempt to report on.  Normalise to "Connected" when a
+        # WAN IP is present so the sensor value is human-friendly.
+        if (
+            wan_status.lower() == "error"
+            and wan_proto.lower() == "static"
+            and wan_ip
+        ):
+            wan_status = "Connected"
+
         # ── DHCP leases ───────────────────────────────────────────────────────
         # dhcp_leases key is on Status_Lan.live.asp.
         # The JS (setDHCPTable) reads 7 fields per row:
