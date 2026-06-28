@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
+import ssl as _ssl_module
 from dataclasses import dataclass, field
 
 import aiohttp
@@ -60,13 +61,20 @@ class DDWRTClient:
         ssl: bool = False,
     ) -> None:
         self._base = f"{'https' if ssl else 'http'}://{host}:{port}"
-        self._ssl = ssl
+        self._use_ssl = ssl
         self._auth_header = _basic_auth_header(username, password)
         self._session: aiohttp.ClientSession | None = None  # created lazily in async context
         _LOGGER.debug(
-            "DD-WRT client configured for %s (password_length=%d)",
-            host, len(password),
+            "DD-WRT client configured for %s (ssl=%s, password_length=%d)",
+            host, ssl, len(password),
         )
+
+    def _ssl_context(self):
+        """Return an SSL context that accepts self-signed router certificates."""
+        ctx = _ssl_module.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = _ssl_module.CERT_NONE
+        return ctx
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
         """Create the session the first time we're inside the event loop."""
@@ -91,13 +99,15 @@ class DDWRTClient:
         headers = {
             "Authorization": self._auth_header,
         }
+        # Use a permissive SSL context so self-signed router certs are accepted.
+        ssl_param = self._ssl_context() if self._use_ssl else False
         try:
             async with session.get(
                 url,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=15),
                 allow_redirects=True,
-                ssl=self._ssl,
+                ssl=ssl_param,
             ) as resp:
                 _LOGGER.debug("DD-WRT %s → HTTP %s", url, resp.status)
                 if resp.status == 401:
@@ -109,7 +119,9 @@ class DDWRTClient:
                         resp.request_info, resp.history, status=400, message="BAD REQUEST"
                     )
                 resp.raise_for_status()
-                return await resp.text()
+                text = await resp.text()
+                _LOGGER.debug("DD-WRT %s response body (first 500 chars): %r", path, text[:500])
+                return text
         except AuthError:
             raise
         except aiohttp.ClientResponseError as err:
@@ -132,8 +144,26 @@ class DDWRTClient:
         r = _parse_live(router_raw)
         w = _parse_live(wireless_raw)
 
-        _LOGGER.debug("DD-WRT router keys: %s", list(r.keys()))
-        _LOGGER.debug("DD-WRT wireless keys: %s", list(w.keys()))
+        # Warn loudly if parsing yielded nothing — this almost always means the
+        # response format didn't match the expected {key::value} pattern (e.g. a
+        # login-redirect page or a changed firmware format).
+        if not r:
+            _LOGGER.warning(
+                "DD-WRT: parsed zero keys from Status_Router.live.asp — "
+                "raw response (first 500 chars): %r",
+                router_raw[:500],
+            )
+        else:
+            _LOGGER.debug("DD-WRT router keys: %s", list(r.keys()))
+
+        if not w:
+            _LOGGER.warning(
+                "DD-WRT: parsed zero keys from Status_Wireless.live.asp — "
+                "raw response (first 500 chars): %r",
+                wireless_raw[:500],
+            )
+        else:
+            _LOGGER.debug("DD-WRT wireless keys: %s", list(w.keys()))
 
         mem_used = _safe_int(r.get("mem_used", "0"))
         mem_free = _safe_int(r.get("mem_free", "0"))
