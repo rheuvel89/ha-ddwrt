@@ -25,7 +25,7 @@ from .const import (
     DEFAULT_TRACK_WIFI,
     DOMAIN,
 )
-from .ddwrt_client import DDWRTClient
+from .ddwrt_client import AuthError, DDWRTClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -66,15 +66,21 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str
         ssl=data[CONF_SSL],
         session=session,
     )
-    ok = await client.test_connection()
-    if not ok:
+    try:
+        router_data = await client.async_get_data()
+    except AuthError:
+        raise InvalidAuth
+    except ConnectionError:
         raise CannotConnect
-    router_data = await client.async_get_data()
     return {"title": router_data.router_name or data[CONF_HOST]}
 
 
 class CannotConnect(Exception):
     """Raised when we can't connect to the router."""
+
+
+class InvalidAuth(Exception):
+    """Raised when credentials are rejected."""
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -97,6 +103,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 info = await _validate_input(self.hass, user_input)
             except CannotConnect:
                 errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Unexpected error during DD-WRT setup")
                 errors["base"] = "unknown"

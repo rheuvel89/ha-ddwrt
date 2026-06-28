@@ -1,10 +1,10 @@
 """DD-WRT router client — parses the live status pages."""
 from __future__ import annotations
 
+import base64
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any
 
 import aiohttp
 
@@ -16,6 +16,16 @@ _KV_RE = re.compile(r"\{(\w+)::([^}]*)\}")
 
 def _parse_live(text: str) -> dict[str, str]:
     return {m.group(1): m.group(2).strip() for m in _KV_RE.finditer(text)}
+
+
+def _basic_auth_header(username: str, password: str) -> str:
+    """Build a raw Basic Auth header value.
+
+    Avoids aiohttp's shared-session auth which can be unreliable on some
+    DD-WRT builds that are strict about the Authorization header format.
+    """
+    token = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return f"Basic {token}"
 
 
 @dataclass
@@ -62,29 +72,46 @@ class DDWRTClient:
         self._password = password
         self._port = port
         self._ssl = ssl
-        self._session = session
-        self._own_session = session is None
-        scheme = "https" if ssl else "http"
-        self._base = f"{scheme}://{host}:{port}"
+        self._base = f"{'https' if ssl else 'http'}://{host}:{port}"
+        self._auth_header = _basic_auth_header(username, password)
+
+        # Always create a dedicated session so we never share cookies/state
+        # with the HA-wide client session, which can cause 401s on DD-WRT.
+        self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None:
-            auth = aiohttp.BasicAuth(self._username, self._password)
-            self._session = aiohttp.ClientSession(auth=auth)
+        if self._session is None or self._session.closed:
+            connector = aiohttp.TCPConnector(ssl=self._ssl)
+            self._session = aiohttp.ClientSession(connector=connector)
         return self._session
 
     async def close(self) -> None:
-        if self._own_session and self._session:
+        if self._session and not self._session.closed:
             await self._session.close()
             self._session = None
 
     async def _fetch(self, path: str) -> str:
         session = await self._get_session()
         url = f"{self._base}{path}"
+        headers = {
+            "Authorization": self._auth_header,
+            # Some DD-WRT builds check the Referer header before serving pages
+            "Referer": self._base + "/",
+        }
         try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
-                r.raise_for_status()
-                return await r.text()
+            async with session.get(
+                url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+                allow_redirects=True,
+            ) as resp:
+                _LOGGER.debug("DD-WRT %s → HTTP %s", url, resp.status)
+                if resp.status == 401:
+                    raise AuthError(f"Authentication failed for {url} (401)")
+                resp.raise_for_status()
+                return await resp.text()
+        except AuthError:
+            raise
         except aiohttp.ClientResponseError as err:
             raise ConnectionError(f"HTTP {err.status} from {url}") from err
         except aiohttp.ClientError as err:
@@ -99,24 +126,31 @@ class DDWRTClient:
         try:
             await self._fetch("/Status_Router.live.asp")
             return True
-        except ConnectionError:
+        except AuthError:
+            _LOGGER.error(
+                "DD-WRT authentication failed — check username and password"
+            )
+            return False
+        except ConnectionError as err:
+            _LOGGER.error("DD-WRT connection error: %s", err)
             return False
 
     async def async_get_data(self) -> DDWRTData:
         """Fetch and return all router data."""
-        router_raw, wireless_raw = await self._fetch(
-            "/Status_Router.live.asp"
-        ), await self._fetch("/Status_Wireless.live.asp")
+        router_raw = await self._fetch("/Status_Router.live.asp")
+        wireless_raw = await self._fetch("/Status_Wireless.live.asp")
 
         r = _parse_live(router_raw)
         w = _parse_live(wireless_raw)
 
-        # Memory
+        _LOGGER.debug("DD-WRT router keys: %s", list(r.keys()))
+        _LOGGER.debug("DD-WRT wireless keys: %s", list(w.keys()))
+
         mem_used = _safe_int(r.get("mem_used", "0"))
         mem_free = _safe_int(r.get("mem_free", "0"))
         mem_total = mem_used + mem_free
 
-        data = DDWRTData(
+        return DDWRTData(
             router_name=r.get("router_name", "DD-WRT"),
             wan_ipaddr=r.get("wan_ipaddr", ""),
             wan_status=r.get("wan_status", ""),
@@ -134,7 +168,10 @@ class DDWRTClient:
             wl_clients=_parse_clients(w.get("active_wireless", "")),
             dhcp_leases=_parse_dhcp(r.get("dhcp_leases", "")),
         )
-        return data
+
+
+class AuthError(ConnectionError):
+    """Raised specifically on 401 so callers can surface a clearer error."""
 
 
 # ------------------------------------------------------------------

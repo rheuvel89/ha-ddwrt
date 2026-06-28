@@ -15,6 +15,7 @@
     },
     "error": {
       "cannot_connect": "Failed to connect — check the IP address, port, and credentials.",
+      "invalid_auth": "Invalid credentials — check your username and password.",
       "unknown": "An unexpected error occurred. Check the Home Assistant logs."
     },
     "abort": {
