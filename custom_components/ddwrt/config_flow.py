@@ -68,10 +68,12 @@ async def _validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str
     )
     try:
         router_data = await client.async_get_data()
-    except AuthError:
-        raise InvalidAuth
-    except ConnectionError:
-        raise CannotConnect
+    except AuthError as err:
+        _LOGGER.error("DD-WRT auth error: %s", err)
+        raise InvalidAuth from err
+    except ConnectionError as err:
+        _LOGGER.error("DD-WRT connection error during setup: %s", err)
+        raise CannotConnect from err
     return {"title": router_data.router_name or data[CONF_HOST]}
 
 

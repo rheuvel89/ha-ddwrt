@@ -113,9 +113,20 @@ class DDWRTClient:
         except AuthError:
             raise
         except aiohttp.ClientResponseError as err:
+            _LOGGER.error("DD-WRT HTTP error fetching %s: %s %s", url, err.status, err.message)
             raise ConnectionError(f"HTTP {err.status} from {url}") from err
+        except aiohttp.ServerTimeoutError as err:
+            _LOGGER.error("DD-WRT timed out fetching %s", url)
+            raise ConnectionError(f"Timeout reaching {url}") from err
+        except aiohttp.ClientConnectorError as err:
+            _LOGGER.error("DD-WRT connection refused or DNS failure for %s: %s", url, err)
+            raise ConnectionError(f"Cannot connect to {url}: {err}") from err
         except aiohttp.ClientError as err:
+            _LOGGER.error("DD-WRT unexpected aiohttp error for %s: %s (%s)", url, err, type(err).__name__)
             raise ConnectionError(f"Cannot reach router at {url}: {err}") from err
+        except Exception as err:
+            _LOGGER.error("DD-WRT unexpected error for %s: %s (%s)", url, err, type(err).__name__)
+            raise ConnectionError(f"Unexpected error reaching {url}: {err}") from err
 
     # ------------------------------------------------------------------
     # Public helpers
