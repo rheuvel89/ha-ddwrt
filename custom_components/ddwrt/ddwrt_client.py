@@ -206,11 +206,10 @@ class DDWRTClient:
                 "raw response (first 500 chars): %r", wireless_raw[:500],
             )
 
-        # Log all parsed dicts at WARNING so they appear in the HA log without
-        # needing debug logging enabled — helps diagnose firmware key variations.
-        _LOGGER.warning("DD-WRT router page keys+values: %s", dict(r))
-        _LOGGER.warning("DD-WRT lan page keys+values: %s", dict(lan))
-        _LOGGER.warning("DD-WRT inet page keys+values: %s", dict(inet))
+        # Log all parsed dicts at DEBUG to aid firmware key diagnostics.
+        _LOGGER.debug("DD-WRT router page keys+values: %s", dict(r))
+        _LOGGER.debug("DD-WRT lan page keys+values: %s", dict(lan))
+        _LOGGER.debug("DD-WRT inet page keys+values: %s", dict(inet))
 
         # ── Memory ────────────────────────────────────────────────────────────
         # This firmware build packs /proc/meminfo into a single `mem_info` CSV
@@ -248,6 +247,7 @@ class DDWRTClient:
         # contains the WAN IP on this firmware and would give the wrong answer.
         lan_ip = (
             lan.get("lan_ipaddr")
+            or lan.get("lan_ip")
             or r.get("lan_ipaddr")
             or r.get("lan_ip")
             or r.get("local_ip")
