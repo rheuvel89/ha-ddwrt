@@ -139,9 +139,13 @@ class DDWRTClient:
     async def async_get_data(self) -> DDWRTData:
         router_raw = await self._fetch("/Status_Router.live.asp")
         wireless_raw = await self._fetch("/Status_Wireless.live.asp")
+        lan_raw = await self._fetch("/Status_Lan.live.asp")
+        inet_raw = await self._fetch("/Status_Internet.live.asp")
 
         r = _parse_live(router_raw)
         w = _parse_live(wireless_raw)
+        lan = _parse_live(lan_raw)
+        inet = _parse_live(inet_raw)
 
         if not r:
             _LOGGER.warning(
@@ -153,6 +157,8 @@ class DDWRTClient:
                 "DD-WRT: parsed zero keys from Status_Wireless.live.asp — "
                 "raw response (first 500 chars): %r", wireless_raw[:500],
             )
+        _LOGGER.debug("DD-WRT lan keys: %s", list(lan.keys()))
+        _LOGGER.debug("DD-WRT inet keys: %s", list(inet.keys()))
 
         # ── Memory ────────────────────────────────────────────────────────────
         # This firmware build packs /proc/meminfo into a single `mem_info` CSV
@@ -181,38 +187,53 @@ class DDWRTClient:
         uptime_display = _LOAD_RE.sub("", uptime_raw).rstrip(", ").strip()
 
         # ── LAN IP ────────────────────────────────────────────────────────────
-        # This firmware exposes the IP via `ipinfo` as "&nbsp;IP: 192.168.0.2"
-        # rather than a dedicated lan_ipaddr key.
+        # Status_Lan.live.asp exposes lan_ipaddr directly; Status_Router.live.asp
+        # on this firmware hides it inside ipinfo as "&nbsp;IP: 192.168.0.2".
         lan_ip = (
-            r.get("lan_ipaddr")
+            lan.get("lan_ipaddr")
+            or r.get("lan_ipaddr")
             or r.get("lan_ip")
             or r.get("local_ip")
             or ""
         )
         if not lan_ip:
-            ipinfo = r.get("ipinfo", "") or w.get("ipinfo", "")
+            ipinfo = r.get("ipinfo", "") or w.get("ipinfo", "") or lan.get("ipinfo", "")
             m2 = _IP_RE.search(ipinfo)
             if m2:
                 lan_ip = m2.group(1)
 
         # ── WAN fields ────────────────────────────────────────────────────────
+        # Status_Internet.live.asp is the authoritative source for WAN data.
         wan_ip = (
-            r.get("wan_ipaddr")
+            inet.get("wan_ipaddr")
+            or inet.get("wan_ip")
+            or r.get("wan_ipaddr")
             or r.get("wan_ip")
             or r.get("wanip")
             or ""
         )
         wan_status = (
-            r.get("wan_status")
+            inet.get("wan_status")
+            or inet.get("wan_3g_status")
+            or r.get("wan_status")
             or r.get("wan_3g_status")
             or r.get("wan_connected")
             or ""
         )
         wan_proto = (
-            r.get("wan_proto")
+            inet.get("wan_proto")
+            or inet.get("wan_shortproto")
+            or r.get("wan_proto")
             or r.get("wan_type")
             or ""
         )
+
+        # ── DHCP leases ───────────────────────────────────────────────────────
+        # dhcp_leases key is on Status_Lan.live.asp.
+        # The JS (setDHCPTable) reads 7 fields per row:
+        #   hostname, ip, mac, expires, [+3 internal UI args]
+        # We only need the first 4 meaningful ones.
+        dhcp_raw = lan.get("dhcp_leases", "") or r.get("dhcp_leases", "")
 
         # ── WiFi radio ────────────────────────────────────────────────────────
         # This firmware returns wl_radio = "Active" (not "Enabled"/"on").
@@ -237,7 +258,7 @@ class DDWRTClient:
             wl_radio=wl_radio,
             wl_rate=w.get("wl_rate", ""),
             wl_clients=_parse_clients(wl_clients_raw),
-            dhcp_leases=_parse_dhcp(r.get("dhcp_leases", "")),
+            dhcp_leases=_parse_dhcp(dhcp_raw),
         )
 
 
@@ -369,11 +390,17 @@ def _parse_clients(raw: str) -> list[dict[str, str]]:
 
 
 def _parse_dhcp(raw: str) -> list[dict[str, str]]:
-    """Parse the dhcp_leases CSV blob.
+    """Parse the dhcp_leases blob from Status_Lan.live.asp.
 
-    DD-WRT typically uses 5 fields per lease (hostname, MAC, IP, expires, type).
-    Falls back to 4-field format for older builds.
-    When the key is absent entirely (as on some builds), returns [].
+    The JS source (setDHCPTable) reads 7 fields per row:
+      [0] hostname
+      [1] ip
+      [2] mac
+      [3] expires
+      [4..6] internal UI args (delete/static button data — ignored)
+
+    Falls back to stride 5 (older firmware with type field) or 4
+    (legacy builds) when the field count doesn't fit stride 7.
     """
     if not raw:
         return []
@@ -381,27 +408,23 @@ def _parse_dhcp(raw: str) -> list[dict[str, str]]:
     fields = [f.strip().strip("'") for f in raw.split(",")]
     leases: list[dict[str, str]] = []
 
-    # Auto-detect stride: prefer 5, fall back to 4.
-    if len(fields) % 5 == 0:
-        stride = 5
-    elif len(fields) % 4 == 0:
-        stride = 4
+    # Pick the stride that evenly divides the field count.
+    # Priority: 7 (current Status_Lan.live.asp) > 5 > 4
+    for stride in (7, 5, 4):
+        if len(fields) % stride == 0:
+            break
     else:
-        # Non-divisible — try 5 anyway (truncates last partial record gracefully)
-        stride = 5
+        stride = 7  # best guess; truncates last partial record gracefully
 
     _LOGGER.debug("DD-WRT DHCP: %d fields → stride=%d", len(fields), stride)
 
     for i in range(0, len(fields) - (stride - 1), stride):
         c = fields[i:i + stride]
-        lease: dict[str, str] = {
+        leases.append({
             "hostname": c[0],
-            "mac":      c[1],
-            "ip":       c[2],
+            "ip":       c[1],
+            "mac":      c[2],
             "expires":  c[3],
-        }
-        if stride == 5:
-            lease["type"] = c[4]
-        leases.append(lease)
+        })
 
     return leases

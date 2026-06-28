@@ -47,7 +47,12 @@ async def main(host: str, username: str, password: str, port: int, use_ssl: bool
         ssl_ctx.verify_mode = _ssl_module.CERT_NONE
 
     async with aiohttp.ClientSession() as session:
-        for path in ["/Status_Router.live.asp", "/Status_Wireless.live.asp"]:
+        for path in [
+            "/Status_Router.live.asp",
+            "/Status_Wireless.live.asp",
+            "/Status_Lan.live.asp",
+            "/Status_Internet.live.asp",
+        ]:
             url = base + path
             print(f"\n{'='*70}")
             print(f"  {url}")
