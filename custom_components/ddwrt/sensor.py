@@ -38,12 +38,6 @@ SENSORS: tuple[DDWRTSensorEntityDescription, ...] = (
         value_fn=lambda d: d.wan_ipaddr or None,
     ),
     DDWRTSensorEntityDescription(
-        key="wan_status",
-        name="WAN Status",
-        icon="mdi:wan",
-        value_fn=lambda d: d.wan_status or None,
-    ),
-    DDWRTSensorEntityDescription(
         key="wan_proto",
         name="WAN Protocol",
         icon="mdi:protocol",
