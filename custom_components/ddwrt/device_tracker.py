@@ -2,7 +2,7 @@
 
 Two separate tracker families:
   - WiFi trackers  (from /Status_Wireless.live.asp active_wireless)
-  - DHCP trackers  (from /Status_Router.live.asp dhcp_leases)
+  - DHCP trackers  (from /Status_Lan.live.asp dhcp_leases)
 
 Each family can be independently toggled via the integration's Options flow
 (Settings → Devices & Services → DD-WRT → Configure).
@@ -42,7 +42,7 @@ async def async_setup_entry(
     track_wifi: bool = entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI)
     track_dhcp: bool = entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP)
 
-    _LOGGER.warning(
+    _LOGGER.debug(
         "DD-WRT device_tracker setup: track_wifi=%s track_dhcp=%s "
         "coordinator_has_data=%s wl_clients=%d dhcp_leases=%d",
         track_wifi, track_dhcp,
@@ -109,7 +109,6 @@ class DDWRTWifiTracker(
     """Tracks a device currently associated with the DD-WRT WiFi radio."""
 
     _attr_source_type = SourceType.ROUTER
-    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -119,17 +118,14 @@ class DDWRTWifiTracker(
     ) -> None:
         super().__init__(coordinator)
         self._mac = mac
+        self._entry_id = entry.entry_id
         self._attr_unique_id = f"{entry.entry_id}_wifi_{mac}"
         self._attr_name = f"WiFi {mac}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": coordinator.data.router_name or "DD-WRT Router",
-            "manufacturer": "DD-WRT",
-            "model": "Router",
-        }
 
     @property
     def is_connected(self) -> bool:
+        if self.coordinator.data is None:
+            return False
         return any(
             c["mac"].upper() == self._mac
             for c in self.coordinator.data.wl_clients
@@ -141,6 +137,8 @@ class DDWRTWifiTracker(
 
     @property
     def extra_state_attributes(self) -> dict:
+        if self.coordinator.data is None:
+            return {"tracker_type": "wifi"}
         for client in self.coordinator.data.wl_clients:
             if client["mac"].upper() == self._mac:
                 return {
@@ -170,7 +168,6 @@ class DDWRTDhcpTracker(
     """
 
     _attr_source_type = SourceType.ROUTER
-    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -184,15 +181,11 @@ class DDWRTDhcpTracker(
         # Use hostname from lease as the initial name; HA users can rename later
         hostname = self._get_lease(coordinator.data, mac).get("hostname") or mac
         self._attr_name = f"DHCP {hostname}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": coordinator.data.router_name or "DD-WRT Router",
-            "manufacturer": "DD-WRT",
-            "model": "Router",
-        }
 
     @staticmethod
-    def _get_lease(data: DDWRTData, mac: str) -> dict:
+    def _get_lease(data: DDWRTData | None, mac: str) -> dict:
+        if data is None:
+            return {}
         for lease in data.dhcp_leases:
             if lease["mac"].upper() == mac:
                 return lease
