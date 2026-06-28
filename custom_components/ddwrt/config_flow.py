@@ -40,7 +40,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 )
 
 
-def _options_schema(current: dict[str, Any]) -> vol.Schema:
+def _trackers_schema(current: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
             vol.Required(
@@ -97,6 +97,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def __init__(self) -> None:
+        self._connection_data: dict[str, Any] = {}
+        self._title: str = ""
+
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> OptionsFlow:
@@ -105,6 +109,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
+        """Step 1: connection details."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -120,12 +125,30 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 await self.async_set_unique_id(user_input[CONF_HOST])
                 self._abort_if_unique_id_configured()
-                return self.async_create_entry(title=info["title"], data=user_input)
+                self._connection_data = user_input
+                self._title = info["title"]
+                return await self.async_step_trackers()
 
         return self.async_show_form(
             step_id="user",
             data_schema=STEP_USER_DATA_SCHEMA,
             errors=errors,
+        )
+
+    async def async_step_trackers(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Step 2: choose which device tracker families to enable."""
+        if user_input is not None:
+            return self.async_create_entry(
+                title=self._title,
+                data=self._connection_data,
+                options=user_input,
+            )
+
+        return self.async_show_form(
+            step_id="trackers",
+            data_schema=_trackers_schema({}),
         )
 
 
@@ -143,5 +166,5 @@ class OptionsFlow(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="init",
-            data_schema=_options_schema(self._config_entry.options),
+            data_schema=_trackers_schema(self._config_entry.options),
         )
