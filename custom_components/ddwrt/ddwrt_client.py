@@ -17,15 +17,60 @@ _KV_RE = re.compile(r"\{(\w+)::([^}]*)\}")
 #   "... load average: 0.03, 0.04, 0.00"
 _LOAD_RE = re.compile(r"load average:\s*([\d.]+(?:,\s*[\d.]+)*)", re.IGNORECASE)
 
-# Extracts a bare IP address from strings like "&nbsp;IP: 192.168.0.2"
+# Extracts a bare IP address (no CIDR) from arbitrary strings
 _IP_RE = re.compile(r'(\d{1,3}(?:\.\d{1,3}){3})')
+
+# Strips CIDR prefix length from strings like "192.168.1.1/24"
+_CIDR_RE = re.compile(r'/\d+$')
+
+# HTML tag stripper
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 # MAC address pattern used to anchor per-client records in the wireless blob
 _MAC_RE = re.compile(r'^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$')
 
+# Patterns used to extract the LAN IP from the rendered (non-live) Status_Lan.asp
+# DD-WRT builds vary, but the IP consistently appears in one of these forms:
+_LAN_IP_HTML_PATTERNS = [
+    # JavaScript variable: var lan_ip = '192.168.1.1';
+    re.compile(r"var\s+lan_ip(?:addr)?\s*=\s*['\"](\d{1,3}(?:\.\d{1,3}){3})['\"]"),
+    # Table cell rendered by CGI tag: <td>192.168.1.1</td>  (look for cell near "lan")
+    re.compile(r"lan_ipaddr[^>]*>\s*(\d{1,3}(?:\.\d{1,3}){3})"),
+    # Fallback: first IP in the page that is NOT the generic 0.0.0.0 / 255.x.x.x range
+    # Used only if the above patterns don't match.
+]
+
 
 def _parse_live(text: str) -> dict[str, str]:
     return {m.group(1): m.group(2).strip() for m in _KV_RE.finditer(text)}
+
+
+def _strip_html(text: str) -> str:
+    """Remove HTML tags and unescape common HTML entities from a string."""
+    text = _HTML_TAG_RE.sub("", text)
+    text = (text
+            .replace("&nbsp;", " ")
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", '"')
+            .replace("&#39;", "'"))
+    return text.strip()
+
+
+def _extract_lan_ip_from_html(html: str) -> str:
+    """Try to pull the LAN IP out of the rendered (non-live) Status_Lan.asp HTML.
+
+    Returns an empty string if nothing convincing is found.
+    """
+    for pat in _LAN_IP_HTML_PATTERNS:
+        m = pat.search(html)
+        if m:
+            ip = m.group(1)
+            # Sanity-check: reject broadcast/loopback/all-zeros addresses
+            if ip not in ("0.0.0.0", "255.255.255.255", "127.0.0.1"):
+                return ip
+    return ""
 
 
 def _basic_auth_header(username: str, password: str) -> str:
@@ -141,6 +186,9 @@ class DDWRTClient:
         wireless_raw = await self._fetch("/Status_Wireless.live.asp")
         lan_raw = await self._fetch("/Status_Lan.live.asp")
         inet_raw = await self._fetch("/Status_Internet.live.asp")
+        # Rendered (non-live) HTML page — CGI values like lan_ipaddr are
+        # sometimes NOT emitted in the {key::value} live.asp format.
+        lan_html = await self._fetch("/Status_Lan.asp")
 
         r = _parse_live(router_raw)
         w = _parse_live(wireless_raw)
@@ -157,8 +205,12 @@ class DDWRTClient:
                 "DD-WRT: parsed zero keys from Status_Wireless.live.asp — "
                 "raw response (first 500 chars): %r", wireless_raw[:500],
             )
-        _LOGGER.debug("DD-WRT lan keys: %s", list(lan.keys()))
-        _LOGGER.debug("DD-WRT inet keys: %s", list(inet.keys()))
+
+        # Log all parsed dicts at WARNING so they appear in the HA log without
+        # needing debug logging enabled — helps diagnose firmware key variations.
+        _LOGGER.warning("DD-WRT router page keys+values: %s", dict(r))
+        _LOGGER.warning("DD-WRT lan page keys+values: %s", dict(lan))
+        _LOGGER.warning("DD-WRT inet page keys+values: %s", dict(inet))
 
         # ── Memory ────────────────────────────────────────────────────────────
         # This firmware build packs /proc/meminfo into a single `mem_info` CSV
@@ -187,20 +239,29 @@ class DDWRTClient:
         uptime_display = _LOAD_RE.sub("", uptime_raw).rstrip(", ").strip()
 
         # ── LAN IP ────────────────────────────────────────────────────────────
-        # Status_Lan.live.asp exposes lan_ipaddr directly; Status_Router.live.asp
-        # on this firmware hides it inside ipinfo as "&nbsp;IP: 192.168.0.2".
+        # Priority order:
+        #  1. lan_ipaddr from Status_Lan.live.asp (most builds expose this)
+        #  2. lan_ipaddr / lan_ip / local_ip from Status_Router.live.asp
+        #  3. Parsed from the rendered Status_Lan.asp HTML (CGI-rendered, reliable)
+        #
+        # We deliberately do NOT fall back to parsing `ipinfo` — that field
+        # contains the WAN IP on this firmware and would give the wrong answer.
         lan_ip = (
             lan.get("lan_ipaddr")
             or r.get("lan_ipaddr")
             or r.get("lan_ip")
             or r.get("local_ip")
+            or _extract_lan_ip_from_html(lan_html)
             or ""
         )
+        # Strip CIDR suffix if present (e.g. "192.168.1.1/24" → "192.168.1.1")
+        lan_ip = _CIDR_RE.sub("", lan_ip).strip()
+
         if not lan_ip:
-            ipinfo = r.get("ipinfo", "") or w.get("ipinfo", "") or lan.get("ipinfo", "")
-            m2 = _IP_RE.search(ipinfo)
-            if m2:
-                lan_ip = m2.group(1)
+            _LOGGER.warning(
+                "DD-WRT: could not determine LAN IP from live keys or HTML page. "
+                "Status_Lan.asp first 300 chars: %r", lan_html[:300],
+            )
 
         # ── WAN fields ────────────────────────────────────────────────────────
         # Status_Internet.live.asp is the authoritative source for WAN data.
@@ -212,7 +273,7 @@ class DDWRTClient:
             or r.get("wanip")
             or ""
         )
-        wan_status = (
+        wan_status_raw = (
             inet.get("wan_status")
             or inet.get("wan_3g_status")
             or r.get("wan_status")
@@ -220,6 +281,10 @@ class DDWRTClient:
             or r.get("wan_connected")
             or ""
         )
+        # wan_status can contain raw HTML on some builds:
+        #   "Error&nbsp;&nbsp;<input class='button' type='button' .../>")
+        wan_status = _strip_html(wan_status_raw)
+
         wan_proto = (
             inet.get("wan_proto")
             or inet.get("wan_shortproto")

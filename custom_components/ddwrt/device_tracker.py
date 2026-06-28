@@ -42,33 +42,56 @@ async def async_setup_entry(
     track_wifi: bool = entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI)
     track_dhcp: bool = entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP)
 
+    _LOGGER.warning(
+        "DD-WRT device_tracker setup: track_wifi=%s track_dhcp=%s "
+        "coordinator_has_data=%s wl_clients=%d dhcp_leases=%d",
+        track_wifi, track_dhcp,
+        coordinator.data is not None,
+        len(coordinator.data.wl_clients) if coordinator.data else -1,
+        len(coordinator.data.dhcp_leases) if coordinator.data else -1,
+    )
+
     wifi_tracked: set[str] = set()
     dhcp_tracked: set[str] = set()
 
     @callback
     def _add_new_devices() -> None:
+        # Guard: coordinator might not have data yet on very first call
+        if coordinator.data is None:
+            _LOGGER.warning("DD-WRT device_tracker: coordinator.data is None — skipping")
+            return
+
         new_entities: list[ScannerEntity] = []
 
-        # ── WiFi clients ────────────────────────────────────────────────
-        if entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI):
-            for client in coordinator.data.wl_clients:
-                mac = client["mac"].upper()
-                if mac not in wifi_tracked:
-                    wifi_tracked.add(mac)
-                    new_entities.append(
-                        DDWRTWifiTracker(coordinator, entry, mac)
-                    )
+        try:
+            # ── WiFi clients ────────────────────────────────────────────────
+            if entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI):
+                for client in coordinator.data.wl_clients:
+                    mac = client["mac"].upper()
+                    if mac not in wifi_tracked:
+                        wifi_tracked.add(mac)
+                        new_entities.append(
+                            DDWRTWifiTracker(coordinator, entry, mac)
+                        )
 
-        # ── DHCP leases ─────────────────────────────────────────────────
-        if entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP):
-            for lease in coordinator.data.dhcp_leases:
-                mac = lease["mac"].upper()
-                if mac not in dhcp_tracked:
-                    dhcp_tracked.add(mac)
-                    new_entities.append(
-                        DDWRTDhcpTracker(coordinator, entry, mac)
-                    )
+            # ── DHCP leases ─────────────────────────────────────────────────
+            if entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP):
+                for lease in coordinator.data.dhcp_leases:
+                    mac = lease["mac"].upper()
+                    if mac not in dhcp_tracked:
+                        dhcp_tracked.add(mac)
+                        new_entities.append(
+                            DDWRTDhcpTracker(coordinator, entry, mac)
+                        )
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("DD-WRT: unexpected error while building tracker entities")
+            return
 
+        _LOGGER.debug(
+            "DD-WRT device_tracker: adding %d new entities "
+            "(wifi_total=%d, dhcp_total=%d)",
+            len(new_entities), len(wifi_tracked), len(dhcp_tracked),
+        )
         if new_entities:
             async_add_entities(new_entities)
 
