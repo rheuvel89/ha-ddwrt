@@ -10,7 +10,6 @@ import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
-# DD-WRT exposes data as a series of {key::value} pairs in its .live.asp pages.
 _KV_RE = re.compile(r"\{(\w+)::([^}]*)\}")
 
 
@@ -19,15 +18,12 @@ def _parse_live(text: str) -> dict[str, str]:
 
 
 def _basic_auth_header(username: str, password: str) -> str:
-    """Build a raw Basic Auth header — safe for any characters including !."""
     token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     return f"Basic {token}"
 
 
 @dataclass
 class DDWRTData:
-    """All data pulled from the router."""
-
     router_name: str = ""
     wan_ipaddr: str = ""
     wan_status: str = ""
@@ -47,7 +43,13 @@ class DDWRTData:
 
 
 class DDWRTClient:
-    """Async client for DD-WRT routers."""
+    """Async client for DD-WRT routers.
+
+    Must be used as an async context manager or have close() awaited:
+
+        async with DDWRTClient(...) as client:
+            data = await client.async_get_data()
+    """
 
     def __init__(
         self,
@@ -57,34 +59,41 @@ class DDWRTClient:
         port: int = 80,
         ssl: bool = False,
     ) -> None:
-        self._host = host
-        self._port = port
-        self._ssl = ssl
         self._base = f"{'https' if ssl else 'http'}://{host}:{port}"
+        self._ssl = ssl
         self._auth_header = _basic_auth_header(username, password)
-
+        self._session: aiohttp.ClientSession | None = None  # created lazily in async context
         _LOGGER.debug(
-            "DD-WRT client for %s@%s (password_length=%d)",
-            username, host, len(password),
+            "DD-WRT client configured for %s (password_length=%d)",
+            host, len(password),
         )
 
-        # Create session immediately so it is always available to close,
-        # preventing "Unclosed client session" warnings on early failures.
-        self._session = aiohttp.ClientSession()
+    async def _ensure_session(self) -> aiohttp.ClientSession:
+        """Create the session the first time we're inside the event loop."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
 
     async def close(self) -> None:
-        """Close the underlying aiohttp session."""
-        if not self._session.closed:
+        if self._session and not self._session.closed:
             await self._session.close()
+        self._session = None
+
+    async def __aenter__(self) -> DDWRTClient:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
 
     async def _fetch(self, path: str) -> str:
+        session = await self._ensure_session()
         url = f"{self._base}{path}"
         headers = {
             "Authorization": self._auth_header,
             "Referer": self._base + "/",
         }
         try:
-            async with self._session.get(
+            async with session.get(
                 url,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=15),
@@ -93,29 +102,25 @@ class DDWRTClient:
             ) as resp:
                 _LOGGER.debug("DD-WRT %s → HTTP %s", url, resp.status)
                 if resp.status == 401:
-                    raise AuthError(f"Authentication failed for {url} (401)")
+                    raise AuthError(f"Authentication failed (401) for {url}")
                 resp.raise_for_status()
                 return await resp.text()
         except AuthError:
             raise
         except aiohttp.ClientResponseError as err:
-            _LOGGER.error("DD-WRT HTTP error fetching %s: %s %s", url, err.status, err.message)
+            _LOGGER.error("DD-WRT HTTP error %s %s: %s", err.status, url, err.message)
             raise ConnectionError(f"HTTP {err.status} from {url}") from err
-        except aiohttp.ServerTimeoutError as err:
-            _LOGGER.error("DD-WRT timed out fetching %s", url)
-            raise ConnectionError(f"Timeout reaching {url}") from err
+        except aiohttp.ServerTimeoutError:
+            _LOGGER.error("DD-WRT timeout fetching %s", url)
+            raise ConnectionError(f"Timeout reaching {url}")
         except aiohttp.ClientConnectorError as err:
             _LOGGER.error("DD-WRT cannot connect to %s: %s", url, err)
             raise ConnectionError(f"Cannot connect to {url}: {err}") from err
         except aiohttp.ClientError as err:
             _LOGGER.error("DD-WRT aiohttp error for %s: %s (%s)", url, err, type(err).__name__)
-            raise ConnectionError(f"Cannot reach router at {url}: {err}") from err
-        except Exception as err:
-            _LOGGER.error("DD-WRT unexpected error for %s: %s (%s)", url, err, type(err).__name__)
-            raise ConnectionError(f"Unexpected error reaching {url}: {err}") from err
+            raise ConnectionError(f"aiohttp error reaching {url}: {err}") from err
 
     async def async_get_data(self) -> DDWRTData:
-        """Fetch and return all router data."""
         router_raw = await self._fetch("/Status_Router.live.asp")
         wireless_raw = await self._fetch("/Status_Wireless.live.asp")
 
@@ -149,12 +154,8 @@ class DDWRTClient:
 
 
 class AuthError(ConnectionError):
-    """Raised specifically on 401."""
+    """Raised on HTTP 401."""
 
-
-# ------------------------------------------------------------------
-# Parsing helpers
-# ------------------------------------------------------------------
 
 def _safe_int(value: str) -> int:
     try:
@@ -168,9 +169,8 @@ def _parse_clients(raw: str) -> list[dict[str, str]]:
         return []
     fields = [f.strip().strip("'") for f in raw.split(",")]
     clients: list[dict[str, str]] = []
-    chunk = 9
-    for i in range(0, len(fields) - chunk + 1, chunk):
-        c = fields[i : i + chunk]
+    for i in range(0, len(fields) - 8, 9):
+        c = fields[i : i + 9]
         clients.append({
             "mac": c[0], "interface": c[1], "uptime": c[2],
             "tx_rate": c[3], "rx_rate": c[4], "signal": c[5],
@@ -184,9 +184,8 @@ def _parse_dhcp(raw: str) -> list[dict[str, str]]:
         return []
     fields = [f.strip().strip("'") for f in raw.split(",")]
     leases: list[dict[str, str]] = []
-    chunk = 4
-    for i in range(0, len(fields) - chunk + 1, chunk):
-        c = fields[i : i + chunk]
+    for i in range(0, len(fields) - 3, 4):
+        c = fields[i : i + 4]
         leases.append({
             "hostname": c[0], "mac": c[1], "ip": c[2], "expires": c[3],
         })

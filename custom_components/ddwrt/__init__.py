@@ -22,7 +22,6 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up DD-WRT from a config entry."""
     client = DDWRTClient(
         host=entry.data[CONF_HOST],
         username=entry.data[CONF_USERNAME],
@@ -51,14 +50,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Close the client session when the entry is unloaded
     entry.async_on_unload(client.close)
-
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
