@@ -6,6 +6,8 @@ exposes it as sensors, binary sensors, and device trackers in Home Assistant.
 > **Tested on:** DD-WRT v3.0-r55723 std (04/09/24)
 > Other builds may work but have not been verified.
 
+> **Note:** This integration was built in collaboration with [Claude.ai](https://claude.ai).
+
 ## Features
 
 | Platform | Entities |
