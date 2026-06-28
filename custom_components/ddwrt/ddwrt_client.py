@@ -90,7 +90,6 @@ class DDWRTClient:
         url = f"{self._base}{path}"
         headers = {
             "Authorization": self._auth_header,
-            "Referer": self._base + "/",
         }
         try:
             async with session.get(
@@ -103,6 +102,12 @@ class DDWRTClient:
                 _LOGGER.debug("DD-WRT %s → HTTP %s", url, resp.status)
                 if resp.status == 401:
                     raise AuthError(f"Authentication failed (401) for {url}")
+                if resp.status == 400:
+                    body = await resp.text()
+                    _LOGGER.error("DD-WRT 400 response body: %r", body[:500])
+                    raise aiohttp.ClientResponseError(
+                        resp.request_info, resp.history, status=400, message="BAD REQUEST"
+                    )
                 resp.raise_for_status()
                 return await resp.text()
         except AuthError:
