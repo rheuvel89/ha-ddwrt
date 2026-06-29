@@ -100,6 +100,20 @@ async def main(host: str, username: str, password: str, port: int, use_ssl: bool
                 print(f"  → likely stride: {9 if len(fields) % 9 == 0 else '?'} (expected 9 per client)")
                 print(f"  First 9 fields: {fields[:9]}")
 
+            # Special: show active clients / ARP table blob
+            for arp_key in ("active_clients", "arp_table", "lan_arp"):
+                if arp_key in parsed:
+                    blob = parsed[arp_key]
+                    fields = [f.strip().strip("'") for f in blob.split(",")]
+                    print(f"\n  {arp_key} blob: {len(fields)} comma-separated fields")
+                    for stride in (3, 4, 5):
+                        if len(fields) % stride == 0:
+                            print(f"  → field count divisible by {stride}")
+                    print(f"  First 12 fields: {fields[:12]}")
+                    break
+            else:
+                print("\n  !! No active_clients / arp_table / lan_arp key found on this page")
+
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Dump DD-WRT live.asp keys and values")
