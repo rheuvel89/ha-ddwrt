@@ -311,9 +311,7 @@ class DDWRTClient:
         #   arp_table       — some older/alternative builds
         #   lan_arp         — seen on a few Kong/Brainslayer variants
         #
-        # Always log all LAN keys at INFO so key-name mismatches are visible
-        # in the HA log without needing debug mode.
-        _LOGGER.info("DD-WRT Status_Lan.live.asp keys: %s", sorted(lan.keys()))
+        _LOGGER.debug("DD-WRT Status_Lan.live.asp keys: %s", sorted(lan.keys()))
         _ARP_KEYS = ("active_clients", "arp_table", "lan_arp")
         active_clients_raw = (
             lan.get("active_clients")
