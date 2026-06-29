@@ -19,8 +19,10 @@ from homeassistant.data_entry_flow import FlowResult
 import homeassistant.helpers.aiohttp_client as ha_aiohttp
 
 from .const import (
+    CONF_TRACK_ACTIVE,
     CONF_TRACK_DHCP,
     CONF_TRACK_WIFI,
+    DEFAULT_TRACK_ACTIVE,
     DEFAULT_TRACK_DHCP,
     DEFAULT_TRACK_WIFI,
     DOMAIN,
@@ -50,6 +52,10 @@ def _trackers_schema(current: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 CONF_TRACK_DHCP,
                 default=current.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP),
+            ): bool,
+            vol.Required(
+                CONF_TRACK_ACTIVE,
+                default=current.get(CONF_TRACK_ACTIVE, DEFAULT_TRACK_ACTIVE),
             ): bool,
         }
     )

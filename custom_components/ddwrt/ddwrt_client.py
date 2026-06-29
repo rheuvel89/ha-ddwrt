@@ -96,6 +96,7 @@ class DDWRTData:
     wl_clients: list[dict[str, str]] = field(default_factory=list)
     lan_ipaddr: str = ""
     dhcp_leases: list[dict[str, str]] = field(default_factory=list)
+    active_clients: list[dict[str, str]] = field(default_factory=list)
 
 
 class DDWRTClient:
@@ -300,6 +301,11 @@ class DDWRTClient:
         # We only need the first 4 meaningful ones.
         dhcp_raw = lan.get("dhcp_leases", "") or r.get("dhcp_leases", "")
 
+        # ── Active clients (ARP table) ────────────────────────────────────────
+        # active_clients is on Status_Lan.live.asp.
+        # Format: hostname,ip,mac  (3 fields per record, comma-separated).
+        active_clients_raw = lan.get("active_clients", "") or r.get("active_clients", "")
+
         # ── WiFi radio ────────────────────────────────────────────────────────
         # This firmware returns wl_radio = "Active" (not "Enabled"/"on").
         wl_radio_raw = w.get("wl_radio", "")
@@ -324,6 +330,7 @@ class DDWRTClient:
             wl_rate=w.get("wl_rate", ""),
             wl_clients=_parse_clients(wl_clients_raw),
             dhcp_leases=_parse_dhcp(dhcp_raw),
+            active_clients=_parse_active_clients(active_clients_raw),
         )
 
 
@@ -493,3 +500,47 @@ def _parse_dhcp(raw: str) -> list[dict[str, str]]:
         })
 
     return leases
+
+
+def _parse_active_clients(raw: str) -> list[dict[str, str]]:
+    """Parse the active_clients blob from Status_Lan.live.asp (ARP table).
+
+    DD-WRT emits 3 fields per record:
+      [0] hostname  (may be empty)
+      [1] ip
+      [2] mac
+
+    Records are comma-separated with no inter-record delimiter; we rely on the
+    MAC address pattern to anchor each record and walk back to pick up the
+    preceding hostname and IP fields.
+    """
+    if not raw:
+        return []
+
+    fields = [f.strip().strip("'") for f in raw.split(",")]
+    clients: list[dict[str, str]] = []
+    seen_macs: set[str] = set()
+
+    for i, f in enumerate(fields):
+        if not _MAC_RE.match(f):
+            continue
+        mac = f.upper()
+        if mac in seen_macs:
+            continue
+        # MAC is at index i; hostname at i-2, ip at i-1
+        if i < 2:
+            continue
+        hostname = fields[i - 2]
+        ip = fields[i - 1]
+        # Basic sanity: ip field should look like an IP
+        if not _IP_RE.match(ip):
+            continue
+        seen_macs.add(mac)
+        clients.append({"hostname": hostname, "ip": ip, "mac": mac})
+
+    if clients:
+        _LOGGER.debug("DD-WRT active_clients: parsed %d ARP entries", len(clients))
+    else:
+        _LOGGER.debug("DD-WRT active_clients: no entries parsed (raw=%r)", raw[:200])
+
+    return clients
