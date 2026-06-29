@@ -311,8 +311,10 @@ class DDWRTClient:
         #   arp_table       — some older/alternative builds
         #   lan_arp         — seen on a few Kong/Brainslayer variants
         #
-        # Log the raw parsed dicts so unknown keys surface in debug logs.
-        _LOGGER.debug("DD-WRT lan page keys: %s", sorted(lan.keys()))
+        # Always log all LAN keys at INFO so key-name mismatches are visible
+        # in the HA log without needing debug mode.
+        _LOGGER.info("DD-WRT Status_Lan.live.asp keys: %s", sorted(lan.keys()))
+        _ARP_KEYS = ("active_clients", "arp_table", "lan_arp")
         active_clients_raw = (
             lan.get("active_clients")
             or lan.get("arp_table")
@@ -322,7 +324,17 @@ class DDWRTClient:
             or r.get("lan_arp")
             or ""
         )
-        _LOGGER.debug("DD-WRT active_clients raw (first 300): %r", active_clients_raw[:300])
+        if not active_clients_raw:
+            _LOGGER.warning(
+                "DD-WRT: none of the probed ARP/active-client key names (%s) were "
+                "found on Status_Lan.live.asp or Status_Router.live.asp. "
+                "Available LAN keys: %s  —  run diagnose.py against your router to "
+                "find the correct key name for your firmware build.",
+                _ARP_KEYS,
+                sorted(lan.keys()),
+            )
+        else:
+            _LOGGER.debug("DD-WRT active_clients raw (first 300): %r", active_clients_raw[:300])
 
         # ── WiFi radio ────────────────────────────────────────────────────────
         # This firmware returns wl_radio = "Active" (not "Enabled"/"on").

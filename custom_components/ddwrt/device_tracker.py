@@ -33,7 +33,7 @@ async def async_setup_entry(
 ) -> None:
     coordinator: DataUpdateCoordinator[DDWRTData] = hass.data[DOMAIN][entry.entry_id]
 
-    _LOGGER.debug(
+    _LOGGER.warning(
         "DD-WRT device_tracker setup: track_wifi=%s track_dhcp=%s track_active=%s "
         "wl_clients=%s dhcp_leases=%s active_clients=%s",
         entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI),
@@ -83,7 +83,7 @@ async def async_setup_entry(
             return
 
         if new_entities:
-            _LOGGER.debug("DD-WRT device_tracker: adding %d new entities", len(new_entities))
+            _LOGGER.warning("DD-WRT device_tracker: adding %d new entities", len(new_entities))
             async_add_entities(new_entities)
 
     _add_new_devices()
