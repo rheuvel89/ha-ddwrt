@@ -18,7 +18,8 @@
         "data": {
           "track_wifi_clients": "Track WiFi clients (wireless associations)",
           "track_dhcp_clients": "Track DHCP clients (wired + wireless leases)",
-          "track_active_clients": "Track active clients (ARP table — all LAN devices)"
+          "track_active_clients": "Track active clients (ARP table — all LAN devices)",
+          "consider_home": "Consider home grace period (seconds, 0 = disabled)"
         }
       }
     },
@@ -39,7 +40,8 @@
         "data": {
           "track_wifi_clients": "Track WiFi clients (wireless associations)",
           "track_dhcp_clients": "Track DHCP clients (wired + wireless leases)",
-          "track_active_clients": "Track active clients (ARP table — all LAN devices)"
+          "track_active_clients": "Track active clients (ARP table — all LAN devices)",
+          "consider_home": "Consider home grace period (seconds, 0 = disabled)"
         }
       }
     }
