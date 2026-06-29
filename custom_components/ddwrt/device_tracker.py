@@ -13,8 +13,10 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import (
+    CONF_TRACK_ACTIVE,
     CONF_TRACK_DHCP,
     CONF_TRACK_WIFI,
+    DEFAULT_TRACK_ACTIVE,
     DEFAULT_TRACK_DHCP,
     DEFAULT_TRACK_WIFI,
     DOMAIN,
@@ -32,16 +34,19 @@ async def async_setup_entry(
     coordinator: DataUpdateCoordinator[DDWRTData] = hass.data[DOMAIN][entry.entry_id]
 
     _LOGGER.debug(
-        "DD-WRT device_tracker setup: track_wifi=%s track_dhcp=%s "
-        "wl_clients=%s dhcp_leases=%s",
+        "DD-WRT device_tracker setup: track_wifi=%s track_dhcp=%s track_active=%s "
+        "wl_clients=%s dhcp_leases=%s active_clients=%s",
         entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI),
         entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP),
+        entry.options.get(CONF_TRACK_ACTIVE, DEFAULT_TRACK_ACTIVE),
         len(coordinator.data.wl_clients) if coordinator.data else "NO DATA",
         len(coordinator.data.dhcp_leases) if coordinator.data else "NO DATA",
+        len(coordinator.data.active_clients) if coordinator.data else "NO DATA",
     )
 
     wifi_tracked: set[str] = set()
     dhcp_tracked: set[str] = set()
+    active_tracked: set[str] = set()
 
     @callback
     def _add_new_devices() -> None:
@@ -65,6 +70,13 @@ async def async_setup_entry(
                     if mac not in dhcp_tracked:
                         dhcp_tracked.add(mac)
                         new_entities.append(DDWRTDhcpTracker(coordinator, entry, mac))
+
+            if entry.options.get(CONF_TRACK_ACTIVE, DEFAULT_TRACK_ACTIVE):
+                for client in coordinator.data.active_clients:
+                    mac = client["mac"].upper()
+                    if mac not in active_tracked:
+                        active_tracked.add(mac)
+                        new_entities.append(DDWRTActiveClientTracker(coordinator, entry, mac))
 
         except Exception:  # noqa: BLE001
             _LOGGER.exception("DD-WRT: unexpected error while building tracker entities")
@@ -200,4 +212,73 @@ class DDWRTDhcpTracker(
             "ip": lease.get("ip"),
             "hostname": lease.get("hostname"),
             "expires": lease.get("expires"),
+        }
+
+
+class DDWRTActiveClientTracker(
+    CoordinatorEntity[DataUpdateCoordinator[DDWRTData]], ScannerEntity
+):
+    """Tracks a device visible in the DD-WRT ARP/active-clients table.
+
+    This covers *all* LAN-connected devices (wired and wireless) that DD-WRT
+    has in its ARP cache, regardless of whether they hold a DHCP lease or are
+    associated with the wireless radio.
+    """
+
+    _attr_source_type = SourceType.ROUTER
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator[DDWRTData],
+        entry: ConfigEntry,
+        mac: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._mac = mac
+        self._unique_id = f"{entry.entry_id}_active_{mac}"
+        hostname = self._get_client(coordinator.data, mac).get("hostname") or mac
+        self._attr_name = f"[ddwrt-active] {hostname}"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID — must override ScannerEntity which returns mac_address."""
+        return self._unique_id
+
+    @property
+    def entity_registry_enabled_default(self) -> bool:
+        """Enable by default — ScannerEntity disables until a device entry exists."""
+        return True
+
+    @staticmethod
+    def _get_client(data: DDWRTData | None, mac: str) -> dict:
+        if data is None:
+            return {}
+        for client in data.active_clients:
+            if client["mac"].upper() == mac:
+                return client
+        return {}
+
+    @property
+    def is_connected(self) -> bool:
+        return bool(self._get_client(self.coordinator.data, self._mac))
+
+    @property
+    def mac_address(self) -> str:
+        return self._mac
+
+    @property
+    def ip_address(self) -> str | None:
+        return self._get_client(self.coordinator.data, self._mac).get("ip")
+
+    @property
+    def hostname(self) -> str | None:
+        return self._get_client(self.coordinator.data, self._mac).get("hostname")
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        client = self._get_client(self.coordinator.data, self._mac)
+        return {
+            "tracker_type": "ddwrt-active",
+            "ip": client.get("ip"),
+            "hostname": client.get("hostname"),
         }

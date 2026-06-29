@@ -17,7 +17,8 @@
         "description": "Choose which device tracker families to enable. You can change these later under the integration's Configure option.",
         "data": {
           "track_wifi_clients": "Track WiFi clients (wireless associations)",
-          "track_dhcp_clients": "Track DHCP clients (wired + wireless leases)"
+          "track_dhcp_clients": "Track DHCP clients (wired + wireless leases)",
+          "track_active_clients": "Track active clients (ARP table — all LAN devices)"
         }
       }
     },
@@ -37,7 +38,8 @@
         "description": "Choose which device tracker families to enable. Changes take effect on the next poll.",
         "data": {
           "track_wifi_clients": "Track WiFi clients (wireless associations)",
-          "track_dhcp_clients": "Track DHCP clients (wired + wireless leases)"
+          "track_dhcp_clients": "Track DHCP clients (wired + wireless leases)",
+          "track_active_clients": "Track active clients (ARP table — all LAN devices)"
         }
       }
     }
