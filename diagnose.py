@@ -100,6 +100,29 @@ async def main(host: str, username: str, password: str, port: int, use_ssl: bool
                 print(f"  → likely stride: {9 if len(fields) % 9 == 0 else '?'} (expected 9 per client)")
                 print(f"  First 9 fields: {fields[:9]}")
 
+            # Special: show active clients / ARP table blob
+            _ARP_KEY_NAMES = (
+                "active_clients", "arp_table", "lan_arp",
+                "activeclients", "arptable", "client_table",
+            )
+            found_arp = False
+            for arp_key in _ARP_KEY_NAMES:
+                if arp_key in parsed:
+                    blob = parsed[arp_key]
+                    fields = [f.strip().strip("'") for f in blob.split(",")]
+                    print(f"\n  ✓ ARP/active-client key found: '{arp_key}'")
+                    print(f"    blob: {len(fields)} comma-separated fields")
+                    for stride in (3, 4, 5):
+                        if len(fields) % stride == 0:
+                            print(f"    → field count divisible by {stride}")
+                    print(f"    First 12 fields: {fields[:12]}")
+                    print(f"    Full raw value: {blob!r}")
+                    found_arp = True
+                    break
+            if not found_arp:
+                print(f"\n  ✗ No ARP/active-client key found (tried: {_ARP_KEY_NAMES})")
+                print(f"    All keys on this page: {sorted(parsed.keys())}")
+
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Dump DD-WRT live.asp keys and values")

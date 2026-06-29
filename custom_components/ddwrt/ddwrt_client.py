@@ -302,9 +302,39 @@ class DDWRTClient:
         dhcp_raw = lan.get("dhcp_leases", "") or r.get("dhcp_leases", "")
 
         # ── Active clients (ARP table) ────────────────────────────────────────
-        # active_clients is on Status_Lan.live.asp.
-        # Format: hostname,ip,mac  (3 fields per record, comma-separated).
-        active_clients_raw = lan.get("active_clients", "") or r.get("active_clients", "")
+        # DD-WRT exposes the ARP/active-client table under different key names
+        # depending on firmware build.  Probe all known variants; the first
+        # non-empty value wins.
+        #
+        # Known key names (Status_Lan.live.asp or Status_Router.live.asp):
+        #   active_clients  — most common on recent builds
+        #   arp_table       — some older/alternative builds
+        #   lan_arp         — seen on a few Kong/Brainslayer variants
+        #
+        # Always log all LAN keys at INFO so key-name mismatches are visible
+        # in the HA log without needing debug mode.
+        _LOGGER.info("DD-WRT Status_Lan.live.asp keys: %s", sorted(lan.keys()))
+        _ARP_KEYS = ("active_clients", "arp_table", "lan_arp")
+        active_clients_raw = (
+            lan.get("active_clients")
+            or lan.get("arp_table")
+            or lan.get("lan_arp")
+            or r.get("active_clients")
+            or r.get("arp_table")
+            or r.get("lan_arp")
+            or ""
+        )
+        if not active_clients_raw:
+            _LOGGER.warning(
+                "DD-WRT: none of the probed ARP/active-client key names (%s) were "
+                "found on Status_Lan.live.asp or Status_Router.live.asp. "
+                "Available LAN keys: %s  —  run diagnose.py against your router to "
+                "find the correct key name for your firmware build.",
+                _ARP_KEYS,
+                sorted(lan.keys()),
+            )
+        else:
+            _LOGGER.debug("DD-WRT active_clients raw (first 300): %r", active_clients_raw[:300])
 
         # ── WiFi radio ────────────────────────────────────────────────────────
         # This firmware returns wl_radio = "Active" (not "Enabled"/"on").
@@ -503,16 +533,22 @@ def _parse_dhcp(raw: str) -> list[dict[str, str]]:
 
 
 def _parse_active_clients(raw: str) -> list[dict[str, str]]:
-    """Parse the active_clients blob from Status_Lan.live.asp (ARP table).
+    """Parse the active_clients / arp_table blob from Status_Lan.live.asp.
 
-    DD-WRT emits 3 fields per record:
-      [0] hostname  (may be empty)
-      [1] ip
-      [2] mac
+    DD-WRT firmware variants use different field layouts.  We anchor on the
+    MAC address (the only unambiguous field) and then classify the surrounding
+    fields by content rather than position.
 
-    Records are comma-separated with no inter-record delimiter; we rely on the
-    MAC address pattern to anchor each record and walk back to pick up the
-    preceding hostname and IP fields.
+    Known formats (all comma-separated, no record delimiter):
+      3-field  hostname, ip, mac        (most common recent builds)
+      3-field  ip, hostname, mac        (some Brainslayer builds)
+      4-field  hostname, ip, mac, iface (Kong/Mega builds)
+
+    Strategy:
+      1. Find every field that looks like a MAC address.
+      2. For the fields *before* the MAC, pick out the IP (matches IP pattern)
+         and treat whatever else is there as hostname.
+      3. Deduplicate by MAC.
     """
     if not raw:
         return []
@@ -527,20 +563,37 @@ def _parse_active_clients(raw: str) -> list[dict[str, str]]:
         mac = f.upper()
         if mac in seen_macs:
             continue
-        # MAC is at index i; hostname at i-2, ip at i-1
-        if i < 2:
+
+        # Look back up to 3 positions for an IP address and hostname.
+        # We don't know the exact stride, so scan the window [i-3 .. i-1].
+        ip = ""
+        hostname = ""
+        for j in range(max(0, i - 3), i):
+            candidate = fields[j]
+            if _IP_RE.fullmatch(candidate) if hasattr(_IP_RE, "fullmatch") else _IP_RE.match(candidate):
+                # Verify it's a full IP (not a partial match inside a longer string)
+                if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$', candidate):
+                    ip = candidate
+                else:
+                    hostname = candidate
+            else:
+                if candidate and not _MAC_RE.match(candidate):
+                    hostname = candidate
+
+        if not ip:
+            # Can't identify the IP — skip this record
+            _LOGGER.debug("DD-WRT active_clients: skipping MAC %s — no IP found in window", mac)
             continue
-        hostname = fields[i - 2]
-        ip = fields[i - 1]
-        # Basic sanity: ip field should look like an IP
-        if not _IP_RE.match(ip):
-            continue
+
         seen_macs.add(mac)
         clients.append({"hostname": hostname, "ip": ip, "mac": mac})
 
     if clients:
         _LOGGER.debug("DD-WRT active_clients: parsed %d ARP entries", len(clients))
     else:
-        _LOGGER.debug("DD-WRT active_clients: no entries parsed (raw=%r)", raw[:200])
+        _LOGGER.debug(
+            "DD-WRT active_clients: no entries parsed from %d fields (raw=%r)",
+            len(fields), raw[:300],
+        )
 
     return clients
