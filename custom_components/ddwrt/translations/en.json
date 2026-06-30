@@ -18,8 +18,16 @@
         "data": {
           "track_wifi_clients": "Track WiFi clients (wireless associations)",
           "track_dhcp_clients": "Track DHCP clients (wired + wireless leases)",
-          "track_active_clients": "Track active clients (ARP table — all LAN devices)",
-          "consider_home": "Consider home grace period (seconds, 0 = disabled)"
+          "track_active_clients": "Track active clients (ARP table — all LAN devices)"
+        }
+      },
+      "tracker_options": {
+        "title": "Consider-Home Grace Periods",
+        "description": "How long (in seconds) to keep a device marked as home after it disappears from the router. Set to 0 to report it as away immediately. Only enabled tracker types are shown.",
+        "data": {
+          "consider_home_wifi": "WiFi tracker grace period (seconds)",
+          "consider_home_dhcp": "DHCP tracker grace period (seconds)",
+          "consider_home_active": "Active client tracker grace period (seconds)"
         }
       }
     },
@@ -40,8 +48,16 @@
         "data": {
           "track_wifi_clients": "Track WiFi clients (wireless associations)",
           "track_dhcp_clients": "Track DHCP clients (wired + wireless leases)",
-          "track_active_clients": "Track active clients (ARP table — all LAN devices)",
-          "consider_home": "Consider home grace period (seconds, 0 = disabled)"
+          "track_active_clients": "Track active clients (ARP table — all LAN devices)"
+        }
+      },
+      "tracker_options": {
+        "title": "Consider-Home Grace Periods",
+        "description": "How long (in seconds) to keep a device marked as home after it disappears from the router. Set to 0 to report it as away immediately. Only enabled tracker types are shown.",
+        "data": {
+          "consider_home_wifi": "WiFi tracker grace period (seconds)",
+          "consider_home_dhcp": "DHCP tracker grace period (seconds)",
+          "consider_home_active": "Active client tracker grace period (seconds)"
         }
       }
     }

@@ -15,11 +15,15 @@ from homeassistant.helpers.update_coordinator import (
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    CONF_CONSIDER_HOME,
+    CONF_CONSIDER_HOME_ACTIVE,
+    CONF_CONSIDER_HOME_DHCP,
+    CONF_CONSIDER_HOME_WIFI,
     CONF_TRACK_ACTIVE,
     CONF_TRACK_DHCP,
     CONF_TRACK_WIFI,
-    DEFAULT_CONSIDER_HOME,
+    DEFAULT_CONSIDER_HOME_ACTIVE,
+    DEFAULT_CONSIDER_HOME_DHCP,
+    DEFAULT_CONSIDER_HOME_WIFI,
     DEFAULT_TRACK_ACTIVE,
     DEFAULT_TRACK_DHCP,
     DEFAULT_TRACK_WIFI,
@@ -38,12 +42,17 @@ async def async_setup_entry(
     coordinator: DataUpdateCoordinator[DDWRTData] = hass.data[DOMAIN][entry.entry_id]
 
     _LOGGER.debug(
-        "DD-WRT device_tracker setup: track_wifi=%s track_dhcp=%s track_active=%s "
-        "consider_home=%ss wl_clients=%s dhcp_leases=%s active_clients=%s",
+        "DD-WRT device_tracker setup: "
+        "track_wifi=%s (consider_home=%ss) "
+        "track_dhcp=%s (consider_home=%ss) "
+        "track_active=%s (consider_home=%ss) "
+        "wl_clients=%s dhcp_leases=%s active_clients=%s",
         entry.options.get(CONF_TRACK_WIFI, DEFAULT_TRACK_WIFI),
+        entry.options.get(CONF_CONSIDER_HOME_WIFI, DEFAULT_CONSIDER_HOME_WIFI),
         entry.options.get(CONF_TRACK_DHCP, DEFAULT_TRACK_DHCP),
+        entry.options.get(CONF_CONSIDER_HOME_DHCP, DEFAULT_CONSIDER_HOME_DHCP),
         entry.options.get(CONF_TRACK_ACTIVE, DEFAULT_TRACK_ACTIVE),
-        entry.options.get(CONF_CONSIDER_HOME, DEFAULT_CONSIDER_HOME),
+        entry.options.get(CONF_CONSIDER_HOME_ACTIVE, DEFAULT_CONSIDER_HOME_ACTIVE),
         len(coordinator.data.wl_clients) if coordinator.data else "NO DATA",
         len(coordinator.data.dhcp_leases) if coordinator.data else "NO DATA",
         len(coordinator.data.active_clients) if coordinator.data else "NO DATA",
@@ -96,47 +105,48 @@ async def async_setup_entry(
 
 
 class _ConsiderHomeMixin:
-    """Mixin that adds a configurable grace period before reporting a device as away.
+    """Grace-period mixin for DD-WRT tracker entities.
 
-    When a device disappears from the router's data, this mixin keeps reporting
-    it as "connected" until the consider_home interval (in seconds) has elapsed
-    since it was last seen.  If the device reappears within the window, the
-    interruption is never surfaced to HA.
-
-    Subclasses must:
-    - call super().__init__(...) before using any mixin attributes
-    - set self._entry = entry (ConfigEntry) in their own __init__
-    - implement _raw_is_connected() → bool  (checks live coordinator data only)
+    Subclasses declare which options key holds their grace-period setting via
+    the class attributes ``_consider_home_key`` and ``_consider_home_default``.
+    On every coordinator update the mixin compares elapsed time since the
+    device was last seen against the configured interval.  While the device is
+    within the window it is still reported as "home"; once the window expires
+    the entity flips to "away".  Reconnection within the window is invisible
+    to HA — no spurious state changes.
     """
 
+    # Subclasses must set these:
+    _consider_home_key: str
+    _consider_home_default: int
+
+    # Set in subclass __init__:
     _entry: ConfigEntry
     _last_seen: datetime | None
 
     def _consider_home_seconds(self) -> int:
         return int(
-            self._entry.options.get(CONF_CONSIDER_HOME, DEFAULT_CONSIDER_HOME)
+            self._entry.options.get(self._consider_home_key, self._consider_home_default)
         )
 
     def _evaluate_connection(self, raw: bool) -> bool:
-        """Return the effective connected state, applying the grace period."""
+        """Return effective connected state with grace-period applied."""
         now = dt_util.utcnow()
 
         if raw:
-            # Device is present — update the last-seen timestamp.
             self._last_seen = now
             return True
 
-        # Device is absent.  Check whether we are still inside the grace window.
         grace = self._consider_home_seconds()
         if grace > 0 and self._last_seen is not None:
             elapsed = (now - self._last_seen).total_seconds()
             if elapsed < grace:
-                return True  # Still within grace period — report as home.
+                return True  # Still within grace window — stay home.
 
         return False
 
     def _consider_home_attributes(self) -> dict:
-        """Extra attributes useful for debugging the grace period."""
+        """Attributes that expose grace-period state for debugging."""
         grace = self._consider_home_seconds()
         attrs: dict = {"consider_home_seconds": grace}
         if self._last_seen is not None:
@@ -155,6 +165,8 @@ class DDWRTWifiTracker(
     """Tracks a device currently associated with the DD-WRT WiFi radio."""
 
     _attr_source_type = SourceType.ROUTER
+    _consider_home_key = CONF_CONSIDER_HOME_WIFI
+    _consider_home_default = DEFAULT_CONSIDER_HOME_WIFI
 
     def __init__(
         self,
@@ -171,20 +183,17 @@ class DDWRTWifiTracker(
 
     @property
     def unique_id(self) -> str:
-        """Return a unique ID — must override ScannerEntity which returns mac_address."""
         return self._unique_id
 
     @property
     def entity_registry_enabled_default(self) -> bool:
-        """Enable by default — ScannerEntity disables until a device entry exists."""
         return True
 
     def _raw_is_connected(self) -> bool:
         if self.coordinator.data is None:
             return False
         return any(
-            c["mac"].upper() == self._mac
-            for c in self.coordinator.data.wl_clients
+            c["mac"].upper() == self._mac for c in self.coordinator.data.wl_clients
         )
 
     @property
@@ -197,13 +206,13 @@ class DDWRTWifiTracker(
 
     @property
     def extra_state_attributes(self) -> dict:
-        base = self._consider_home_attributes()
-        base["tracker_type"] = "ddwrt-wifi"
+        attrs = self._consider_home_attributes()
+        attrs["tracker_type"] = "ddwrt-wifi"
         if self.coordinator.data is None:
-            return base
+            return attrs
         for client in self.coordinator.data.wl_clients:
             if client["mac"].upper() == self._mac:
-                base.update(
+                attrs.update(
                     {
                         "interface": client.get("interface"),
                         "signal": client.get("signal"),
@@ -214,8 +223,8 @@ class DDWRTWifiTracker(
                         "uptime": client.get("uptime"),
                     }
                 )
-                return base
-        return base
+                return attrs
+        return attrs
 
 
 class DDWRTDhcpTracker(
@@ -226,6 +235,8 @@ class DDWRTDhcpTracker(
     """Tracks a device with an active DHCP lease on DD-WRT."""
 
     _attr_source_type = SourceType.ROUTER
+    _consider_home_key = CONF_CONSIDER_HOME_DHCP
+    _consider_home_default = DEFAULT_CONSIDER_HOME_DHCP
 
     def __init__(
         self,
@@ -243,12 +254,10 @@ class DDWRTDhcpTracker(
 
     @property
     def unique_id(self) -> str:
-        """Return a unique ID — must override ScannerEntity which returns mac_address."""
         return self._unique_id
 
     @property
     def entity_registry_enabled_default(self) -> bool:
-        """Enable by default — ScannerEntity disables until a device entry exists."""
         return True
 
     @staticmethod
@@ -301,12 +310,13 @@ class DDWRTActiveClientTracker(
 ):
     """Tracks a device visible in the DD-WRT ARP/active-clients table.
 
-    This covers *all* LAN-connected devices (wired and wireless) that DD-WRT
-    has in its ARP cache, regardless of whether they hold a DHCP lease or are
-    associated with the wireless radio.
+    Covers all LAN-connected devices (wired and wireless) that DD-WRT has in
+    its ARP cache, regardless of DHCP lease or wireless association status.
     """
 
     _attr_source_type = SourceType.ROUTER
+    _consider_home_key = CONF_CONSIDER_HOME_ACTIVE
+    _consider_home_default = DEFAULT_CONSIDER_HOME_ACTIVE
 
     def __init__(
         self,
@@ -324,12 +334,10 @@ class DDWRTActiveClientTracker(
 
     @property
     def unique_id(self) -> str:
-        """Return a unique ID — must override ScannerEntity which returns mac_address."""
         return self._unique_id
 
     @property
     def entity_registry_enabled_default(self) -> bool:
-        """Enable by default — ScannerEntity disables until a device entry exists."""
         return True
 
     @staticmethod
